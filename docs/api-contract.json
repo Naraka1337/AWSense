@@ -1,0 +1,21 @@
+{
+  "description": "Initial API Contract for AWSense",
+  "endpoints": {
+    "GET /api/v1/alerts": {
+      "description": "Fetch a list of recent security/cost anomalies.",
+      "response": {
+        "status": "success",
+        "data": [
+          {
+            "id": "alert_12345",
+            "type": "behavioral_anomaly",
+            "severity": "high",
+            "resource": "i-0abcd1234efgh5678",
+            "message": "Unusual IAM activity detected followed by EC2 creation.",
+            "timestamp": "2024-05-20T14:32:00Z"
+          }
+        ]
+      }
+    }
+  }
+}
