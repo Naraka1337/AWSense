@@ -129,6 +129,7 @@ def test_base_health_and_openapi_routes(client: TestClient) -> None:
         "/api/v1/overview",
         "/api/v1/resources",
         "/api/v1/alerts",
+        "/api/v1/alerts/{alert_id}/status",
         "/api/v1/traffic",
         "/api/v1/recommendations",
         "/api/v1/recommendations/{recommendation_id}/action",
@@ -379,5 +380,62 @@ def test_recommendations_list_and_action_toggle(
     invalid_resp = client.post(
         f"/api/v1/recommendations/{target_id}/action",
         json={"action": "delete_everything"},
+    )
+    assert invalid_resp.status_code == 422
+
+
+def test_alert_status_transitions_and_validation(client: TestClient) -> None:
+    """Verify POST /api/v1/alerts/{alert_id}/status persists transitions and validates input."""
+    list_resp = client.get("/api/v1/alerts")
+    assert list_resp.status_code == 200
+    target_id = list_resp.json()["alerts"][0]["alert_id"]
+
+    # Transition open -> investigating.
+    inv_resp = client.post(
+        f"/api/v1/alerts/{target_id}/status",
+        json={"status": "investigating"},
+    )
+    assert inv_resp.status_code == 200
+    inv_data = inv_resp.json()
+    assert inv_data["previous_status"] == "open"
+    assert inv_data["alert"]["status"] == "investigating"
+
+    # Transition investigating -> resolved and verify GET filter persistence.
+    res_resp = client.post(
+        f"/api/v1/alerts/{target_id}/status",
+        json={"status": "resolved"},
+    )
+    assert res_resp.status_code == 200
+    assert res_resp.json()["alert"]["status"] == "resolved"
+
+    resolved_list = client.get("/api/v1/alerts", params={"status": "resolved"}).json()
+    assert any(item["alert_id"] == target_id for item in resolved_list["alerts"])
+
+    # Transition resolved -> dismissed -> open.
+    dis_resp = client.post(
+        f"/api/v1/alerts/{target_id}/status",
+        json={"status": "dismissed"},
+    )
+    assert dis_resp.status_code == 200
+    assert dis_resp.json()["alert"]["status"] == "dismissed"
+
+    reopen_resp = client.post(
+        f"/api/v1/alerts/{target_id}/status",
+        json={"status": "open"},
+    )
+    assert reopen_resp.status_code == 200
+    assert reopen_resp.json()["alert"]["status"] == "open"
+
+    # Unknown alert returns 404.
+    missing_resp = client.post(
+        "/api/v1/alerts/alert_does_not_exist/status",
+        json={"status": "resolved"},
+    )
+    assert missing_resp.status_code == 404
+
+    # Invalid status returns 422.
+    invalid_resp = client.post(
+        f"/api/v1/alerts/{target_id}/status",
+        json={"status": "ignored_invalid"},
     )
     assert invalid_resp.status_code == 422

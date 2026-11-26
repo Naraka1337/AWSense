@@ -42,11 +42,11 @@ For complete architectural specifications, UML diagrams, entity relationships, a
 
 1. **Multi-Signal Correlation Engine (`correlator.py`):** Automatically associates related CloudTrail audit events, CloudWatch metric spikes, and Cost Explorer billing jumps within configurable time windows (60 min) by resource ID, IAM principal, or AWS region.
 2. **Machine Learning Anomaly Detection (`ml_detector.py`):** Unsupervised multivariate `IsolationForest` pipeline trained on `cpu_utilization`, `network_in_bytes`, `network_out_bytes`, and `request_count`, with `log1p` logarithmic compression and calibrated sigmoid anomaly scoring (`0.0–1.0`).
-3. **Risk Scoring (`correlator.py`, `risk_scorer.py`):** Each correlated incident gets a `0–100` score and severity from the correlator's cluster formula (peak/mean of IAM, resource, cost and traffic factors plus source-diversity and volume bonuses). `risk_scorer.py` implements the 5-factor weighted formula (ML 30%, IAM 25%, resource 20%, cost 15%, traffic 10%) with unit tests, but it is not yet called by the API. See [§7.2–7.3 of the design doc](docs/system-analysis-and-design.md).
+3. **Risk Scoring (`correlator.py`, `risk_scorer.py`, `alerts.py`):** Correlated incidents start with the correlator's cluster score, and `GET /api/v1/alerts` computes the 5-factor weighted score via `score_risk()` (ML 30%, IAM 25%, resource 20%, cost 15%, traffic 10%) whenever an `IsolationForest` `ml_score` is resolved (including security-group or summary-linked compute resources).
 4. **Cloud Hygiene & Cost Auditing (`auditor.py`):** Automatically flags underutilized EC2 instances (<15% CPU), identifies unattached EBS storage volumes, and detects backup gaps (missing or stale recovery points) across RDS and S3.
-5. **AI Incident Explanations (`ai_explainer.py`):** Produces a plain-English summary and numbered remediation steps via OpenAI or Gemini when a key is set, and a deterministic template otherwise. `GET /alerts` only calls it for alerts missing a summary or actions.
-6. **Threat Simulation Drawer (`SimulatePanel.jsx`):** On-demand simulation of **IAM Credential Breach**, **Automated Bot Traffic** and **Resource Waste**, either from local fixtures (mock mode) or via the stateless `POST /api/v1/simulate` (live mode; nothing is written to the database).
-7. **Interactive Dashboard & Sanitized CSV Export:** Client-side sorting, "Backup Gaps Only" toggle, dynamic KPI metrics, and formula-injection-safe CSV export (`\uFEFF` UTF-8 BOM, `= + - @ \t \r` prefix protection).
+5. **AI Incident Explanations (`ai_explainer.py`):** Produces a plain-English summary and numbered remediation steps via OpenAI or Gemini when a key is set, and a deterministic template otherwise (used by `POST /api/v1/simulate` and as a fallback in `GET /api/v1/alerts`).
+6. **Threat Simulation Drawer (`SimulatePanel.jsx`):** On-demand simulation of **IAM Credential Breach**, **Automated Bot Traffic**, and **Resource Waste**, either from local previews (mock mode) or via `POST /api/v1/simulate` (live mode, which enriches the incident via `explain_incident()` and persists the simulated resource, alert, and recommendations to the database).
+7. **Interactive Dashboard & Sanitized CSV Export:** Client-side sorting, "Backup Gaps Only" toggle, alert lifecycle status endpoint (`POST /api/v1/alerts/{id}/status`), dynamic KPI metrics, and formula-injection-safe CSV export (`\uFEFF` UTF-8 BOM, `= + - @ \t \r` prefix protection).
 
 ---
 
@@ -57,11 +57,11 @@ AWSense/
 ├── backend/
 │   ├── app/
 │   │   ├── api/                  # FastAPI routers
-│   │   │   ├── alerts.py         # /api/v1/alerts endpoints & lifecycle status
+│   │   │   ├── alerts.py         # /api/v1/alerts & /api/v1/alerts/{id}/status endpoints
 │   │   │   ├── overview.py       # /api/v1/overview KPIs & historical trends
 │   │   │   ├── recommendations.py# /api/v1/recommendations & action approval
 │   │   │   ├── resources.py      # /api/v1/resources & inventory filtering
-│   │   │   ├── simulate.py       # /api/v1/simulate incident scenario engine
+│   │   │   ├── simulate.py       # /api/v1/simulate persistent scenario engine
 │   │   │   └── traffic.py        # /api/v1/traffic analytics & endpoint patterns
 │   │   ├── core/
 │   │   │   └── database.py       # SQLAlchemy engine, session factory, pragmas
@@ -72,12 +72,13 @@ AWSense/
 │   │   │   ├── auditor.py        # Resource rightsizing and egress attribution
 │   │   │   ├── correlator.py     # Pure-Python time-window correlation engine
 │   │   │   ├── ml_detector.py    # IsolationForest anomaly detector pipeline
+│   │   │   ├── ml_eval.py        # ML precision/recall/F1 & latency benchmark
 │   │   │   ├── mock_generator.py # Deterministic synthetic AWS telemetry fixtures
 │   │   │   ├── repository.py     # Database CRUD and idempotent seeder
 │   │   │   ├── risk_scorer.py    # 5-factor composite mathematical scoring formula
-│   │   │   └── telemetry_provider.py # Provider abstraction (Mock & Boto3)
+│   │   │   └── telemetry_provider.py # Provider abstraction (Mock & Boto3 collectors)
 │   │   └── main.py               # FastAPI application startup, CORS, and routers
-│   ├── tests/                    # Comprehensive Pytest test suites (42 tests)
+│   ├── tests/                    # Pytest unit, API & smoke suites (55 tests, 10 modules)
 │   ├── requirements.txt          # Python dependencies
 │   ├── pytest.ini                # Pytest configuration
 │   └── .env.example              # Backend environment template
@@ -167,10 +168,10 @@ Optional variables read by the code (not in `.env.example`):
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `DATA_SOURCE` | `mock` | `mock` or `aws` (`aws` is a stub and raises `NotImplementedError`) |
+| `DATA_SOURCE` | `mock` | `mock` or `aws` (`Boto3TelemetryProvider` implements read-only EC2/EBS/RDS/S3/CloudWatch/CloudTrail/Cost Explorer collectors) |
 | `OPENAI_API_KEY` / `LLM_API_KEY` | unset | Enables OpenAI explanations; `LLM_MODEL` defaults to `gpt-4o-mini` |
 | `GEMINI_API_KEY` | unset | Enables Gemini explanations (used only if no OpenAI key); `GEMINI_MODEL` overrides the model |
-| `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | Used by the `Boto3TelemetryProvider` stub |
+| `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | Used by `Boto3TelemetryProvider` |
 
 `.env` is loaded from the `backend/` directory regardless of where you start uvicorn.
 
@@ -182,12 +183,16 @@ To manually initialize and seed the database ahead of time:
 python -c "from app.core import database; from app.services.repository import seed_database; database.create_tables(); s = database.SessionLocal(); seed_database(s); s.close(); print('Database initialized and seeded.')"
 ```
 
-#### Step 5: Run the Backend Test Suite
-Verify that all 42 unit and integration tests pass:
+#### Step 5: Run the Backend Test Suite & ML Benchmark
+Verify that all 55 unit and integration tests pass:
 ```bash
 pytest -v
 # or, from the repository root:
 pytest backend/tests -v
+```
+Run the ML detection and correlation benchmark:
+```bash
+python -m app.services.ml_eval
 ```
 
 #### Step 6: Start the FastAPI Backend Server
@@ -205,6 +210,7 @@ The server creates the tables and seeds the mock data on startup. Use `--host 0.
 | Method | Endpoint |
 | :--- | :--- |
 | GET | `/api/v1/overview`, `/api/v1/resources`, `/api/v1/alerts`, `/api/v1/traffic`, `/api/v1/recommendations` |
+| POST | `/api/v1/alerts/{id}/status` (body `{"status": "open\|investigating\|resolved\|dismissed"}`) |
 | POST | `/api/v1/recommendations/{id}/action` (body `{"action": "pending\|approved\|dismissed"}`) |
 | POST | `/api/v1/simulate` (body `{"scenario": "iam_breach\|bot_traffic\|resource_waste"}`) |
 
@@ -276,8 +282,8 @@ Generates production assets in `frontend/dist/`.
   - **Resource Waste:** Idle worker instances averaging 7% CPU, unattached EBS storage, cold logs in S3.
   - Scores differ by mode: mock mode shows fixed sample results (94 / 78 / 41); live mode returns the backend's constants (96 critical / 92 critical / 78 high).
 - Click **"Run simulation"**:
-  - In mock mode (`VITE_USE_MOCK=true`): Renders instant preview.
-  - In live mode (`VITE_USE_MOCK=false`): Dispatches `POST /api/v1/simulate` to the FastAPI backend, which returns the result computed from mock telemetry. It does not persist anything.
+  - In mock mode (`VITE_USE_MOCK=true`): Renders instant local preview.
+  - In live mode (`VITE_USE_MOCK=false`): Dispatches `POST /api/v1/simulate` to the FastAPI backend, which evaluates the scenario from mock telemetry, enriches the explanation via `explain_incident()`, and persists the simulated resource, alert, and pending recommendations to the database.
 
 ### 2. Resource Inventory & CSV Export (`/resources`)
 - **Resource Inventory:** Displays all tracked compute, storage, and database resources with CPU utilization gauges and backup badges.
@@ -291,7 +297,7 @@ Generates production assets in `frontend/dist/`.
 
 | Test Command | Scope | Target | Result |
 | :--- | :--- | :--- | :---: |
-| `pytest backend/tests -v` | Backend Unit & Integration Tests | Database, ORM, ML, Correlator, API, Simulate, Repository | **42 / 42 PASSED** |
+| `pytest backend/tests -v` | Backend Unit & Integration Tests (10 modules) | Database, ORM, ML, ML Eval, Boto3 Stubber, Correlator, Auditor, API, Simulate, Repository, Smoke | **55 / 55 PASSED** |
 | `node --test frontend/src/services/adapters.test.mjs` | Frontend Adapter Tests | Overview, Resources, Alerts, Traffic, Recommendations schema mappers | **6 / 6 PASSED** |
 | `npm run build --prefix frontend` | Production Bundle Compilation | Vite React compilation, PostCSS, Tailwind CSS | **PASSED (0 errors)** |
 

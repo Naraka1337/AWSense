@@ -1,17 +1,23 @@
-"""Correlated security and cost alerts endpoint backed by SQLAlchemy and ML scoring."""
+"""Correlated security and cost alerts endpoint backed by SQLAlchemy, ML, and 5-factor risk scoring."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.models.entities import AlertSeverity, AlertStatus, TelemetryMetric
+from app.models.entities import (
+    AlertSeverity,
+    AlertStatus,
+    CloudResource,
+    SecurityAlert,
+    TelemetryMetric,
+)
 from app.services.ai_explainer import explain_incident
 from app.services.correlator import (
     CloudTrailEvent,
@@ -22,6 +28,7 @@ from app.services.correlator import (
 )
 from app.services.ml_detector import score_metrics
 from app.services.repository import list_alerts
+from app.services.risk_scorer import score_risk
 
 router = APIRouter(prefix="/api/v1", tags=["alerts"])
 
@@ -52,9 +59,22 @@ class AlertsResponse(BaseModel):
     alerts: list[AlertItem]
 
 
+class AlertStatusUpdateRequest(BaseModel):
+    """Status transition payload for POST /api/v1/alerts/{alert_id}/status."""
+
+    status: AlertStatus
+
+
+class AlertStatusUpdateResponse(BaseModel):
+    """Response payload returned after updating an alert's lifecycle status."""
+
+    alert: AlertItem
+    previous_status: AlertStatus
+    message: str
+
+
 def _build_sample_alerts() -> tuple[AlertItem, ...]:
     """Generate deterministic static alerts via the correlation engine."""
-
     incidents = correlate_signals(
         cloudtrail_events=[
             CloudTrailEvent(
@@ -167,14 +187,8 @@ def _build_sample_alerts() -> tuple[AlertItem, ...]:
     )
 
     items: list[AlertItem] = []
-
     for index, inc in enumerate(incidents):
-        alert_status = (
-            AlertStatus.INVESTIGATING
-            if index == 1
-            else AlertStatus.OPEN
-        )
-
+        alert_status = AlertStatus.INVESTIGATING if index == 1 else AlertStatus.OPEN
         items.append(
             AlertItem(
                 alert_id=f"alert_{inc.incident_id}",
@@ -192,19 +206,20 @@ def _build_sample_alerts() -> tuple[AlertItem, ...]:
                 created_at=inc.window_end,
             )
         )
-
     return tuple(items)
 
 
 _SAMPLE_ALERTS = _build_sample_alerts()
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
+
+
 def _datetime_sort_key(value: datetime) -> float:
     """Normalize naive and timezone-aware datetimes for sorting."""
-
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-
     return value.timestamp()
 
 
@@ -213,9 +228,7 @@ def _normalize_breakdown(
     alert: Any | None = None,
 ) -> SignalBreakdown:
     """Normalize stored signal breakdowns to the API response schema."""
-
     data = raw or {}
-
     risk_score = getattr(alert, "risk_score", 0.0)
     alert_type = getattr(alert, "alert_type", "")
 
@@ -245,7 +258,6 @@ def _normalize_breakdown(
 
 def _compute_ml_scores_by_resource(db: Session) -> dict[str, float]:
     """Compute peak ML anomaly score per resource from stored telemetry."""
-
     rows = list(db.scalars(select(TelemetryMetric)).all())
     if not rows:
         return {}
@@ -261,9 +273,7 @@ def _compute_ml_scores_by_resource(db: Session) -> dict[str, float]:
             "network_out_bytes": float(row.network_out_bytes),
             "request_count": int(row.request_count),
         }
-
         records_by_resource.setdefault(row.resource_id, []).append(payload)
-
         if row.cpu_utilization < 80.0 and row.request_count < 1_000_000:
             baseline_rows.append(payload)
 
@@ -271,24 +281,79 @@ def _compute_ml_scores_by_resource(db: Session) -> dict[str, float]:
         return {}
 
     scores_by_resource: dict[str, float] = {}
-
     for resource_id, target_rows in records_by_resource.items():
         scores = score_metrics(baseline_rows, target_rows)
-
         if scores:
             scores_by_resource[resource_id] = round(max(scores), 4)
-
     return scores_by_resource
+
+
+def _build_security_group_resource_map(db: Session) -> dict[str, list[str]]:
+    """Map security group IDs stored in resource metadata to their compute resource IDs."""
+    sg_map: dict[str, list[str]] = {}
+    for res in db.scalars(select(CloudResource)).all():
+        meta = res.metadata_json or {}
+        sg_id = meta.get("security_group")
+        if isinstance(sg_id, str) and sg_id:
+            sg_map.setdefault(sg_id, []).append(res.resource_id)
+    return sg_map
+
+
+def _resolve_alert_ml_score(
+    alert: Any,
+    ml_scores: dict[str, float] | None,
+    sg_map: dict[str, list[str]] | None,
+) -> tuple[float | None, list[str]]:
+    """Resolve an alert's ML score and linked resource IDs across direct, SG, or summary matches."""
+    rid = getattr(alert, "resource_id", None)
+    resource_ids = [rid] if rid else []
+
+    if rid and sg_map and rid in sg_map:
+        for linked_id in sg_map[rid]:
+            if linked_id not in resource_ids:
+                resource_ids.append(linked_id)
+
+    if ml_scores:
+        direct_scores = [ml_scores[cand] for cand in resource_ids if cand in ml_scores]
+        if direct_scores:
+            return max(direct_scores), resource_ids
+
+        searchable_text = f"{getattr(alert, 'title', '') or ''} {getattr(alert, 'ai_summary', '') or ''}"
+        matched_ids = [cand for cand in sorted(ml_scores) if cand in searchable_text]
+        if matched_ids:
+            for cand in matched_ids:
+                if cand not in resource_ids:
+                    resource_ids.append(cand)
+            return max(ml_scores[cand] for cand in matched_ids), resource_ids
+
+    raw_breakdown = getattr(alert, "signal_breakdown", None) or {}
+    if "ml_score" in raw_breakdown and raw_breakdown["ml_score"] is not None:
+        return round(_clamp(float(raw_breakdown["ml_score"]), 0.0, 1.0), 4), resource_ids
+
+    return None, resource_ids
 
 
 def _convert_db_alert(
     alert: Any,
     ml_scores: dict[str, float] | None = None,
+    sg_map: dict[str, list[str]] | None = None,
 ) -> AlertItem:
     """Convert a SQLAlchemy SecurityAlert into the API response schema."""
-
-    resource_ids = [alert.resource_id] if alert.resource_id else []
     breakdown = _normalize_breakdown(alert.signal_breakdown, alert)
+    ml_score, resource_ids = _resolve_alert_ml_score(alert, ml_scores, sg_map)
+
+    risk_score = float(alert.risk_score)
+    severity = alert.severity
+    if ml_score is not None:
+        scored = score_risk(
+            ml_score=_clamp(ml_score, 0.0, 1.0),
+            iam_risk=_clamp(breakdown.iam_risk, 0.0, 100.0),
+            resource_impact=_clamp(breakdown.resource_impact, 0.0, 100.0),
+            cost_impact=_clamp(breakdown.cost_impact, 0.0, 100.0),
+            traffic_anomaly=_clamp(breakdown.traffic_anomaly, 0.0, 100.0),
+        )
+        risk_score = float(scored["risk_score"])
+        severity = AlertSeverity(str(scored["severity"]))
 
     summary = alert.ai_summary or ""
     actions = list(alert.recommended_actions or [])
@@ -305,9 +370,7 @@ def _convert_db_alert(
                 "signal_breakdown": breakdown.model_dump(),
             }
         )
-
         summary = summary or explained["summary"]
-
         if not actions:
             actions = explained["recommended_actions"]
 
@@ -316,13 +379,9 @@ def _convert_db_alert(
         resource_id=alert.resource_id,
         resource_ids=resource_ids,
         alert_type=alert.alert_type,
-        severity=alert.severity,
-        risk_score=alert.risk_score,
-        ml_score=(
-            ml_scores.get(alert.resource_id)
-            if ml_scores and alert.resource_id
-            else None
-        ),
+        severity=severity,
+        risk_score=risk_score,
+        ml_score=ml_score,
         title=alert.title,
         correlated_event_ids=alert.correlated_event_ids or [],
         signal_breakdown=breakdown,
@@ -339,27 +398,26 @@ def get_alerts(
     status: AlertStatus | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> AlertsResponse:
-    """Return sample and persisted alerts with optional filters."""
-
-    alerts_by_id = {
-        alert.alert_id: alert.model_copy(deep=True)
-        for alert in _SAMPLE_ALERTS
-    }
+    """Return persisted alerts (falling back to sample alerts when DB is empty) with optional filters."""
+    items: list[AlertItem] = []
 
     # Depends is not resolved when this function is called directly in tests.
     if isinstance(db, Session):
-        ml_scores = _compute_ml_scores_by_resource(db)
+        db_alerts = list_alerts(db)
+        if db_alerts:
+            ml_scores = _compute_ml_scores_by_resource(db)
+            sg_map = _build_security_group_resource_map(db)
+            items = [
+                _convert_db_alert(db_alert, ml_scores, sg_map)
+                for db_alert in db_alerts
+            ]
 
-        # Database records take priority over sample alerts with duplicate IDs.
-        for db_alert in list_alerts(db):
-            alerts_by_id[db_alert.alert_id] = _convert_db_alert(
-                db_alert,
-                ml_scores,
-            )
+    if not items:
+        items = [alert.model_copy(deep=True) for alert in _SAMPLE_ALERTS]
 
     filtered = [
         alert
-        for alert in alerts_by_id.values()
+        for alert in items
         if (severity is None or alert.severity == severity)
         and (status is None or alert.status == status)
     ]
@@ -375,4 +433,39 @@ def get_alerts(
     return AlertsResponse(
         total=len(filtered),
         alerts=filtered,
+    )
+
+
+@router.post(
+    "/alerts/{alert_id}/status",
+    response_model=AlertStatusUpdateResponse,
+)
+def update_alert_status(
+    alert_id: str,
+    payload: AlertStatusUpdateRequest,
+    db: Session = Depends(get_db),
+) -> AlertStatusUpdateResponse:
+    """Update a persisted alert's lifecycle status ('open', 'investigating', 'resolved', 'dismissed')."""
+    existing = db.get(SecurityAlert, alert_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=f"Alert '{alert_id}' not found",
+        )
+
+    previous_status = existing.status
+    existing.status = payload.status
+    db.commit()
+    db.refresh(existing)
+
+    ml_scores = _compute_ml_scores_by_resource(db)
+    sg_map = _build_security_group_resource_map(db)
+
+    return AlertStatusUpdateResponse(
+        alert=_convert_db_alert(existing, ml_scores, sg_map),
+        previous_status=previous_status,
+        message=(
+            f"Alert '{alert_id}' updated from "
+            f"'{previous_status.value}' to '{existing.status.value}'"
+        ),
     )
