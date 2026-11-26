@@ -32,27 +32,27 @@ When monitored in isolation, these telemetry streams fail to surface complex, cr
 
 ### 2.2 Functional Requirements (FR)
 
-- **FR-1: Telemetry Ingestion & Provider Abstraction:** Ingest normalized infrastructure configurations, CloudWatch metrics, CloudTrail audit logs, Cost Explorer deltas, and web traffic logs through a provider interface. `MockTelemetryProvider` (deterministic synthetic data) is implemented; `Boto3TelemetryProvider` is a stub for future live AWS collection.
+- **FR-1: Telemetry Ingestion & Provider Abstraction:** Ingest normalized infrastructure configurations, CloudWatch metrics, CloudTrail audit logs, Cost Explorer deltas, and web traffic logs through a provider interface. `MockTelemetryProvider` (deterministic synthetic data) is implemented; `Boto3TelemetryProvider` implements read-only AWS collection.
 - **FR-2: Machine Learning Anomaly Detection:** Train an unsupervised multivariate model (`IsolationForest`) on normal baseline metric vectors (`cpu_utilization`, `network_in_bytes`, `network_out_bytes`, `request_count`) and score target rows between `0.0` and `1.0`.
 - **FR-3: Temporal Event Correlation:** Group heterogeneous security, performance, and cost events within configurable time windows (default: 60 minutes) based on explicit resource IDs, IAM principals, or regional scope.
-- **FR-4: Risk Scoring:** Score correlated incidents on `0–100` with severity tiers. The 5-factor formula (`score_risk`) exists but is not yet wired in; stored alerts use the correlator's cluster score (§7.2, §7.3).
+- **FR-4: Risk Scoring:** Score correlated incidents on `0–100` with severity tiers. The alert API uses the five-factor `score_risk()` when an ML score is available. See §7.2 and §7.3 for how the stored and returned scores are produced.
 - **FR-5: Cloud Waste & Hygiene Auditing:** Continuously inspect EC2 instances for low CPU utilization (<15%), identify unattached EBS storage volumes, and flag stale or missing backups across RDS databases and S3 buckets.
-- **FR-6: Scenario Simulation:** Provide on-demand simulation of IAM Credential Breach, Automated Bot Traffic and Resource Waste in offline sample-data mode and via the stateless `POST /api/v1/simulate`.
+- **FR-6: Scenario Simulation:** Provide on-demand simulation of IAM Credential Breach, Automated Bot Traffic and Resource Waste in offline sample-data mode and via `POST /api/v1/simulate`, which persists the simulated alert and any recommendations.
 - **FR-7: AI Narrative & Action Generation:** Synthesize plain-English incident narratives and numbered remediation action steps leveraging OpenAI or Gemini when an API key is set, with a deterministic template otherwise.
 - **FR-8: Interactive Web Dashboard:** Provide an accessible, responsive Single Page Application with client-side sorting, "Backup Gaps Only" filtering, sanitization-protected CSV data exports, and instant live/mock data toggling.
 
 ### 2.3 Non-Functional Requirements (NFR)
 
-- **NFR-1: Performance & Latency (targets, not benchmarked):**
+- **NFR-1: Performance & Latency (targets, with a synthetic ML measurement in §11):**
   - REST API responses for overview and resource queries under 200ms.
   - ML scoring of 100 datapoints under 50ms.
 - **NFR-2: Security & Principle of Least Privilege:**
-  - Real AWS connectors (not yet implemented) must use read-only IAM policies (`Describe*`, `Get*`, `List*`).
+  - The AWS collectors require permissions for the specific read-only SDK operations they use.
   - No secrets, credentials, or proprietary tokens stored in version control or browser storage.
   - CSV exports must sanitize formula-injection control characters (`=`, `+`, `-`, `@`, `\t`, `\r`) with leading single quotes.
 - **NFR-3: Reliability & Graceful Degradation:**
   - Complete dual-mode operation: the application must fully function in offline mock mode (`VITE_USE_MOCK=true`) without requiring database or backend connectivity.
-  - With no LLM key set, explanations fall back to a deterministic template. LLM request failures are not yet handled (§10).
+  - Explanations use a deterministic template when no LLM key is configured or a provider call or response fails (§7.4).
 - **NFR-4: Accessibility & Usability:**
   - Interface dialogs comply with WCAG 2.1 AA requirements, including keyboard navigation, focus-trapping inside modal drawers, Escape key closing, and `aria-live` screen reader notifications.
   - Responsive design adapting from desktop down to 375px mobile viewports.
@@ -63,16 +63,16 @@ When monitored in isolation, these telemetry streams fail to surface complex, cr
 
 ### 3.1 Layered System Architecture
 
-Solid arrows are wired in the running application. Dashed arrows mark code that exists but is not yet connected (see §7.3 and §10).
+The diagram shows the seed flow, the configurable provider paths and the components used by the alert API.
 
 ```mermaid
 flowchart TD
     subgraph L1["1. Ingestion (telemetry_provider.py)"]
         Mock["MockTelemetryProvider<br/>deterministic synthetic data"]
-        Boto["Boto3TelemetryProvider<br/>STUB: every method raises NotImplementedError"]
+        Boto["Boto3TelemetryProvider<br/>read-only AWS SDK collectors"]
         Factory["get_telemetry_provider()<br/>DATA_SOURCE = mock | aws"]
         Factory --> Mock
-        Factory -.-> Boto
+        Factory --> Boto
     end
 
     subgraph L2["2. Analytics (app/services)"]
@@ -100,11 +100,12 @@ flowchart TD
     Mock -->|"startup seed"| Repo
     Repo --> Corr
     Corr -->|"incidents"| Repo
-    Mock -->|"cost, traffic"| API
+    Factory -->|"overview and traffic telemetry"| API
+    API -->|"mock scenario selection"| Mock
     API --> Aud
     API -->|"GET /alerts"| ML
-    API -->|"GET /alerts fallback"| Expl
-    Risk -.->|"not called by app code"| API
+    API -->|"missing alert explanation or simulation"| Expl
+    API -->|"score alert when ML confidence is available"| Risk
     API -->|"REST JSON"| Api
 ```
 
@@ -154,13 +155,16 @@ flowchart LR
     DB -->|"stored metrics"| P3["3.0 ML scoring<br/>score_metrics"]
     P3 -->|"ml_score per resource"| P4["4.0 Alerts endpoint<br/>GET /api/v1/alerts"]
     DB -->|"alert rows"| P4
-    P4 -.->|"only if summary or actions empty"| P5["5.0 explain_incident<br/>OpenAI / Gemini / template"]
+    P4 -.->|"only if summary or actions empty"| P5["5.0 explain_incident<br/>OpenAI / Gemini / template fallback"]
     P5 -.-> P4
 
-    Src -->|"cost, traffic"| P6["6.0 Overview / Traffic / Simulate<br/>auditor.py"]
+    Providers["Configured telemetry provider"] -->|"cost, traffic"| P6["6.0 Overview and Traffic"]
     DB --> P6
+    Src --> P7["8.0 Simulate scenario"]
+    P7 -->|"persist simulated alert and recommendations"| DB
     P4 --> UI["7.0 React client<br/>adapters.js"]
     P6 --> UI
+    P7 --> UI
 ```
 
 ---
@@ -200,6 +204,7 @@ sequenceDiagram
     participant API as GET /api/v1/alerts
     participant Repo as repository.list_alerts
     participant ML as score_metrics (IsolationForest)
+    participant Risk as score_risk
     participant AI as explain_incident
     participant DB as SQLAlchemy DB
 
@@ -212,16 +217,20 @@ sequenceDiagram
     API->>ML: baseline rows (cpu < 80 and requests < 1M) vs each resource's rows
     ML->>ML: log1p, StandardScaler, IsolationForest, sigmoid
     ML-->>API: peak anomaly score per resource
+    opt An ML score can be resolved for the alert
+        API->>Risk: ML score and four normalized risk factors
+        Risk-->>API: API risk score and severity
+    end
     opt alert has no ai_summary or no recommended_actions
         API->>AI: explain_incident(alert)
-        AI-->>API: summary + numbered actions (LLM if key set, else template)
+        AI-->>API: summary + numbered actions (provider response or template fallback)
     end
-    API-->>UI: AlertsResponse (risk_score from DB, ml_score from ML)
+    API-->>UI: AlertsResponse (computed risk when ML is available, stored risk otherwise)
     UI->>UI: adaptAlerts()
     UI-->>User: render feed
 ```
 
-The 5-factor `score_risk()` (§7.3) does not appear in either flow because no application code calls it. `risk_score` on every stored alert comes from the correlator's own cluster formula (§7.2).
+Seeding stores the correlator score for correlated incidents (§7.2). The alert API computes the five-factor response score when the alert has a usable ML score (§7.3).
 
 ---
 
@@ -313,7 +322,7 @@ $$S_{ML} = \frac{1}{1 + \exp\left(\mathrm{clip}\left(\frac{d - \text{score\_cent
 
 `is_anomaly_predicted` is true when `S_ML >= 0.70`.
 
-**Where it runs.** `score_metrics(baseline_rows, target_rows)` fits a fresh detector per call. `GET /alerts` (`app/api/alerts.py`) builds the baseline from all stored `telemetry_metrics` rows with `cpu_utilization < 80` and `request_count < 1,000,000` (needs at least 10), scores each resource's rows, and returns the maximum as `ml_score`. This value is displayed; it does not change the stored `risk_score`.
+**Where it runs.** `score_metrics(baseline_rows, target_rows)` fits a fresh detector per call. `GET /alerts` (`app/api/alerts.py`) builds the baseline from all stored `telemetry_metrics` rows with `cpu_utilization < 80` and `request_count < 1,000,000` (needs at least 10), scores each resource's rows, and returns the maximum as `ml_score`. The API resolves an alert-level ML score from the relevant resources or a stored ML score. When available, it uses that value for response scoring (§7.3).
 
 ### 7.2 Chronological Signal Correlation (`backend/app/services/correlator.py`)
 
@@ -333,7 +342,7 @@ $$S_{ML} = \frac{1}{1 + \exp\left(\mathrm{clip}\left(\frac{d - \text{score\_cent
 
 Priority 1 and 2 matches are preferred (the best-ranked cluster wins, and other matching clusters merge into it if the combined span still fits). A priority 3 match attaches to the most recent such cluster. No match starts a new cluster. Clusters smaller than `min_signals` (default 2) are dropped.
 
-**Cluster scoring (this is the `risk_score` stored on alerts).** For each cluster:
+**Cluster scoring (the initial score stored for correlated seed alerts).** For each cluster:
 
 - `iam_risk = min(100, 100*max(CloudTrail w) + 5*(n_cloudtrail - 1))`
 - `traffic_anomaly = 100*max(w of metric spikes whose name contains request, traffic, bot, network, rpm, rps, egress or bandwidth)`
@@ -344,7 +353,7 @@ Priority 1 and 2 matches are preferred (the best-ranked cluster wins, and other 
 
 Severity uses the same cut-offs as §7.3. Incident type is chosen by rule: `iam_compute_surge` (CloudTrail plus a metric, cost or high IAM risk), `bot_traffic_cost_spike` (traffic spike and no CloudTrail), `cost_utilization_anomaly` (metric plus cost), otherwise `correlated_anomaly`.
 
-On the seeded mock data this yields two incidents that both clip to 100.0 (observed via `GET /alerts`), so the bonuses saturate the scale on the bundled fixtures.
+This cluster formula is separate from the five-factor score returned by the alert API when an ML score is available.
 
 ### 7.3 Five-Factor Risk Scoring (`backend/app/services/risk_scorer.py`)
 
@@ -360,17 +369,17 @@ $$\text{risk} = 100\left(0.30\,\tfrac{ml}{1} + 0.25\,\tfrac{iam}{100} + 0.20\,\t
 
 Out-of-range or non-finite inputs raise `ValueError`. The result is rounded to 2 decimals. Severity: `>= 85` critical, `>= 65` high, `>= 40` medium, otherwise low.
 
-**Status:** `score_risk()` is implemented and unit-tested (`test_ml_ai.py`) but nothing in `backend/app` calls it. Persisted alert scores come from §7.2. The correlator's `SignalBreakdown` already produces four of its five inputs (`iam_risk`, `resource_impact`, `cost_impact`, `traffic_anomaly`), and `ml_score` is available from §7.1, so wiring it in is a small change.
+**API integration.** The alert response converter calls `score_risk()` when it resolves an ML score. It combines that score with the normalized IAM, resource, cost and traffic factors. The returned score and severity drive severity filtering and result sorting in `GET /alerts`. If an ML score is unavailable, the API returns the persisted score and severity. The status-update endpoint uses the same response converter.
 
 ### 7.4 AI Explanation (`backend/app/services/ai_explainer.py`)
 
-`explain_incident(incident: dict)` always builds a deterministic summary and three generic steps. If `OPENAI_API_KEY` (or `LLM_API_KEY`) is set it calls OpenAI Chat Completions (`LLM_MODEL`, default `gpt-4o-mini`); otherwise, if `GEMINI_API_KEY` is set, it calls Gemini (`GEMINI_MODEL`). Steps are returned numbered (`"1. ..."`). With no key set, the template is returned. A network failure or malformed LLM reply is not caught inside the function or by `alerts.py`, so it would surface as an HTTP 500 on `GET /alerts`. In practice the call is only reached for alerts with an empty summary or action list, and seeded alerts always have both.
+`explain_incident(incident: dict)` always builds a deterministic summary and three generic steps. If `OPENAI_API_KEY` (or `LLM_API_KEY`) is set it calls OpenAI Chat Completions (`LLM_MODEL`, default `gpt-4o-mini`); otherwise, if `GEMINI_API_KEY` is set, it calls Gemini (`GEMINI_MODEL`). Steps are returned numbered (`"1. ..."`). The template is returned when no key is configured. Network failures, HTTP errors, timeouts, malformed JSON and invalid response structures also return the template. The warning identifies the provider and exception type without logging the key, incident payload or provider response. `GET /alerts` invokes the explainer when it needs a summary or action list. Backend simulations use it to enrich their responses and persisted alerts.
 
 ---
 
 ## 8. Incident Simulation (`backend/app/api/simulate.py`)
 
-`POST /api/v1/simulate` with body `{"scenario": "iam_breach" | "bot_traffic" | "resource_waste"}`. It is stateless: it uses the mock provider, reads no database session, writes nothing, and the correlator, ML detector and scorer are not involved.
+`POST /api/v1/simulate` with body `{"scenario": "iam_breach" | "bot_traffic" | "resource_waste"}`. The API uses the mock provider to generate scenario findings and recommendations. It ensures the scenario resource exists, uses the explainer for the summary and actions, saves the simulated alert with a scenario-specific ID and commits any generated recommendations as pending.
 
 | Scenario | Backend `risk_score` / severity (findings present) | Fallback (no findings) |
 | :--- | :--- | :--- |
@@ -378,7 +387,7 @@ Out-of-range or non-finite inputs raise `ValueError`. The result is rounded to 2
 | `bot_traffic` | 92, critical | 15, low |
 | `resource_waste` | 78, high | 10, low |
 
-The scores are constants chosen by `if findings` checks. Offline mock mode (`VITE_USE_MOCK=true`) shows separate hard-coded results in `SimulatePanel.jsx` (94 critical, 78 high, 41 medium), so the same scenario shows different numbers in mock and live mode.
+Scenario-specific rules produce the simulation response scores above. The frontend offline fixtures have their own scores in `SimulatePanel.jsx`. The Alerts API may recalculate a stored simulation alert's response score if an ML score can be resolved (§7.3).
 
 ---
 
@@ -394,9 +403,10 @@ The scores are constants chosen by `if findings` checks. Offline mock mode (`VIT
 | GET | `/api/v1/traffic` | egress, bot share, endpoint patterns |
 | GET | `/api/v1/recommendations` | list with total estimated savings |
 | POST | `/api/v1/recommendations/{recommendation_id}/action` | body `{"action": "pending" \| "approved" \| "dismissed"}`; 404 if unknown |
-| POST | `/api/v1/simulate` | see §8 |
+| POST | `/api/v1/simulate` | sends a generated scenario response and persists the simulated alert and any recommendations (see §8) |
+| POST | `/api/v1/alerts/{alert_id}/status` | body contains `status` (`open`, `investigating`, `resolved`, or `dismissed`); 404 if unknown |
 
-There is no endpoint that changes an alert's `status`, even though the column and enum support `open`, `investigating`, `resolved`, `dismissed`.
+The status endpoint persists the new status and returns the updated alert and its previous status.
 
 Note on backup status: the API and database use `outdated`; the frontend adapter (`adapters.js`) maps it to `stale` for display.
 
@@ -404,20 +414,16 @@ Note on backup status: the API and database use `outdated`; the frontend adapter
 
 ## 10. Known Gaps (found during verification)
 
-1. `score_risk()` is not called by the application (§7.3).
-2. `Boto3TelemetryProvider` raises `NotImplementedError` from every method; only `DATA_SOURCE=mock` works. The read-only IAM policy requirement (NFR-2) is a design target.
-3. `GET /alerts` has no error handling around `explain_incident` LLM calls (§7.4).
-4. `/simulate` does not persist and returns different scores from offline mock mode (§8).
-5. Alerts have no status-update endpoint (§9).
-6. NFR-1 latency figures are targets; no benchmark exists in the repo.
-7. `CORS allow_origins=["*"]` in `main.py` is flagged in code as development-only.
-8. Python 3.11 or newer is required: `entities.py` imports `enum.StrEnum`.
+1. AWS collection requires configured read-only credentials and service access. Startup database seeding still defaults to the mock provider unless a provider is passed explicitly to `seed_database()`.
+2. The benchmark in §11 measures synthetic ML inference. The REST response-time targets in §2 still need endpoint-level measurements.
+3. `CORS allow_origins=["*"]` in `main.py` is flagged in code as development-only.
+4. Python 3.11 or newer is required because the backend uses `enum.StrEnum`.
 
 ---
 
 ## 11. Verification Record
 
-Checked on a fresh clone at commit `e25615e` (Python 3.12.3, Node 22):
+Historical baseline checked on a fresh clone at commit `e25615e` (Python 3.12.3, Node 22):
 
 | Check | Command | Result |
 | :--- | :--- | :--- |
@@ -429,3 +435,28 @@ Checked on a fresh clone at commit `e25615e` (Python 3.12.3, Node 22):
 | ERD | compared with `backend/app/models/entities.py` | table names, columns, enums, FKs and ondelete rules match §6 |
 
 Test modules: `test_database`, `test_repository`, `test_correlator`, `test_ml_ai`, `test_api_routes`, `test_auditor_and_simulate`, `test_telemetry_provider`, `test_codebase_smoke`.
+
+
+### Day 5/6 Explainer and ML Benchmark Verification
+
+Observed on Linux with Python 3.12.14 against the Day 5/6 changes based on commit `026b13b`. Run the following commands from `backend/`:
+
+```console
+python -m pytest tests/test_ml_ai.py tests/test_ml_eval.py -v
+python -m app.services.ml_eval
+```
+
+The targeted run passed **23 tests**, including deterministic fallback for mocked OpenAI and Gemini failures. The benchmark fitted the detector on 120 normal synthetic records and evaluated it on 144 synthetic records at a 0.70 threshold.
+
+| Metric | Observed value |
+| :--- | :--- |
+| Precision | 100.00% |
+| Recall | 100.00% |
+| F1 | 100.00% |
+| False-positive rate | 0.00% |
+| Confusion matrix (actual normal/anomalous rows, predicted normal/anomalous columns) | `[[119, 0], [0, 25]]` |
+| Median anomaly score, normal / anomalous | 0.181227 / 0.806729 |
+| Score separation (anomalous median minus normal median) | 0.625502 |
+| Total inference latency (`inference_ms_total`) | 11.76 ms |
+
+The latency is a single batch prediction measurement for this run. It excludes model fitting and API round-trip time. Classification results apply to the synthetic evaluation set.
