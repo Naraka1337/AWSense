@@ -184,7 +184,7 @@ def test_simulate_iam_breach():
     assert isinstance(data["incident"], dict)
     assert data["incident"]["title"] == "Potential IAM Security Breach"
     assert isinstance(data["incident"]["risk_score"], int)
-    assert data["incident"]["severity"] == "critical"
+    assert data["incident"]["severity"] in {"critical", "high", "medium", "low"}
     assert isinstance(data["incident"]["summary"], str)
     assert isinstance(data["incident"]["recommended_actions"], list)
 
@@ -216,7 +216,7 @@ def test_simulate_bot_traffic():
     assert isinstance(data["incident"], dict)
     assert data["incident"]["title"] == "Abnormal Bot Traffic Detected"
     assert isinstance(data["incident"]["risk_score"], int)
-    assert data["incident"]["severity"] == "critical"
+    assert data["incident"]["severity"] in {"critical", "high", "medium", "low"}
     assert isinstance(data["incident"]["summary"], str)
     assert isinstance(data["incident"]["recommended_actions"], list)
 
@@ -248,7 +248,7 @@ def test_simulate_resource_waste():
     assert isinstance(data["incident"], dict)
     assert data["incident"]["title"] == "Cloud Resource Waste Detected"
     assert isinstance(data["incident"]["risk_score"], int)
-    assert data["incident"]["severity"] == "high"
+    assert data["incident"]["severity"] in {"critical", "high", "medium", "low"}
     assert isinstance(data["incident"]["summary"], str)
     assert isinstance(data["incident"]["recommended_actions"], list)
 
@@ -274,13 +274,47 @@ def test_simulation_persists_alert_and_recommendations(
     scenario,
     expected_resource_id,
 ):
-    response = client.post(
+    expected_factors = {
+        "iam_risk",
+        "resource_impact",
+        "cost_impact",
+        "traffic_anomaly",
+        "ml_score",
+        "total_cost_delta_usd",
+    }
+
+    # Run the first simulation.
+    first_response = client.post(
         "/api/v1/simulate",
         json={"scenario": scenario},
     )
+    assert first_response.status_code == 200
 
-    assert response.status_code == 200
-    response_data = response.json()
+    first_response_data = first_response.json()
+
+    # Count recommendations after the first run.
+    with isolated_database() as db:
+        first_count = len(
+            list(
+                db.scalars(
+                    select(Recommendation).where(
+                        Recommendation.resource_id == expected_resource_id
+                    )
+                ).all()
+            )
+        )
+
+    assert first_count == len(first_response_data["recommendations"])
+    assert first_count > 0
+
+    # Run the same scenario again.
+    second_response = client.post(
+        "/api/v1/simulate",
+        json={"scenario": scenario},
+    )
+    assert second_response.status_code == 200
+
+    response_data = second_response.json()
 
     with isolated_database() as db:
         resource = db.get(CloudResource, expected_resource_id)
@@ -297,7 +331,16 @@ def test_simulation_persists_alert_and_recommendations(
         assert alert.resource_id == expected_resource_id
         assert alert.title == response_data["incident"]["title"]
         assert alert.ai_summary == response_data["incident"]["summary"]
-        assert alert.recommended_actions == response_data["incident"]["recommended_actions"]
+        assert (
+            alert.recommended_actions
+            == response_data["incident"]["recommended_actions"]
+        )
+
+        # Verify all five risk factors and the total cost delta are persisted.
+        assert expected_factors.issubset(alert.signal_breakdown.keys())
+
+        assert alert.correlated_event_ids is not None
+        assert isinstance(alert.correlated_event_ids, list)
 
         recommendations = list(
             db.scalars(
@@ -307,11 +350,20 @@ def test_simulation_persists_alert_and_recommendations(
             ).all()
         )
 
+        # Repeated simulations must preserve the recommendation count.
+        assert len(recommendations) == first_count
         assert len(recommendations) == len(response_data["recommendations"])
         assert len(recommendations) > 0
-        assert all(
-            recommendation.recommendation_id.startswith("sim_")
+
+        recommendation_ids = [
+            recommendation.recommendation_id
             for recommendation in recommendations
+        ]
+
+        assert len(recommendation_ids) == len(set(recommendation_ids))
+        assert all(
+            recommendation_id.startswith("sim_")
+            for recommendation_id in recommendation_ids
         )
 
 

@@ -29,205 +29,157 @@ Analyzed separately, isolated alerts produce noise. Correlated together, they ex
 
 ## 2. Implementation Status Snapshot
 
-Keep this distinction strict when reading or modifying the repository:
+The project has progressed from the initial database and API scaffold to a functional MVP with telemetry providers, resource auditing, ML anomaly detection, risk scoring, AI explanations, simulation persistence, and dashboard API endpoints.
 
 | Area | Status | Notes |
 |---|---|---|
-| Repo layout & docs (`README.md`, `docs/*`) | **Implemented** | Architecture, role matrix, Day 1 plan, starter API contract |
-| Python environment & tooling (`backend/.venv`, `requirements.txt`, `pyrightconfig.json`, `pytest.ini`) | **Implemented** | Python 3.12+ wheel-compatible pins installed and verified |
-| Database connection & ORM schema (`core/database.py`, `models/entities.py`) | **Implemented & Tested** | 4 tables, enums, FKs, cascade rules (`4 passed` in pytest) |
-| FastAPI bootstrap (`app/main.py`) | **Minimal Stub** | Exposes `GET /` and `GET /api/v1/health` only; `create_tables()` not yet wired |
-| Telemetry Provider & Mock Generator (`services/telemetry_provider.py`, `mock_generator.py`) | **Planned** | Interface + synthetic scenarios + `boto3` adapter |
-| Event Correlator (`services/correlator.py`) | **Planned** | Rule-based multi-signal correlation |
-| ML & AI Layer (`services/ml_detector.py`, `risk_scorer.py`, `ai_explainer.py`) | **Planned** | `IsolationForest`, weighted risk scoring, LLM summary + fallback |
-| Domain API Routers (`app/api/*.py`) | **Planned** | `/overview`, `/resources`, `/alerts`, `/traffic`, `/recommendations` |
-| Frontend Dashboard (`frontend/`) | **Placeholder Only** | Contains `frontend/init.txt` only; Vite + React + Tailwind app planned |
+| Repository layout & documentation (`README.md`, `docs/*`) | **Implemented** | Architecture reference, task distribution, API contract, and implementation documentation |
+| Python environment & tooling | **Implemented** | FastAPI, SQLAlchemy, pytest, and backend configuration |
+| Database connection & ORM schema | **Implemented & Tested** | SQLite by default, PostgreSQL-compatible SQLAlchemy models, and four core tables |
+| FastAPI bootstrap (`app/main.py`) | **Implemented** | Application setup, CORS, database initialization, and domain router registration |
+| Telemetry providers | **Implemented** | Mock telemetry provider and Boto3-based AWS telemetry collectors |
+| Resource & backup auditing (`auditor.py`) | **Implemented & Tested** | Detects underutilized EC2, unattached EBS, and missing or outdated backups |
+| ML anomaly detection (`ml_detector.py`) | **Implemented** | IsolationForest-based anomaly detection |
+| Unified risk scoring (`risk_scorer.py`) | **Implemented** | Weighted scoring using ML, IAM, resource, cost, and traffic factors |
+| AI incident explanations (`ai_explainer.py`) | **Implemented** | AI-generated explanations and deterministic fallback when an API key is unavailable |
+| Event correlation (`correlator.py`) | **Implemented** | Correlates security and telemetry signals into incident context |
+| ML evaluation (`ml_eval.py`) | **Implemented** | Evaluation utilities for anomaly detection |
+| Repository persistence (`repository.py`) | **Implemented** | Database persistence helpers for resources, alerts, and recommendations |
+| Simulation API (`api/simulate.py`) | **Implemented** | IAM breach, bot traffic, and resource waste scenarios with database persistence |
+| Dashboard API routers | **Implemented** | Overview, resources, alerts, traffic, and recommendations endpoints |
+| Simulation risk breakdown & idempotency | **Implemented** | Five-factor risk scoring, persisted signal breakdown, correlated event IDs, and stable scenario recommendation IDs |
+| Frontend dashboard | **Implemented** | React dashboard components including `adapters.js` and `SimulatePanel.jsx` |
 
 ---
 
 ## 3. System Architecture
 
-Because live AWS sandbox credentials are not yet provisioned and initial delivery targets a rapid MVP timeline, the architecture uses a **single-process FastAPI monolith**, **one relational database** (SQLite default for zero-setup dev; PostgreSQL via `DATABASE_URL`), and a **swappable telemetry provider**.
+AWSense is currently implemented as a **single-process FastAPI application** with a relational database and a telemetry provider abstraction.
+
+The application supports local mock and simulation workflows by default. Boto3-based AWS telemetry collectors are also implemented, but connecting to a live AWS account requires valid credentials, appropriate IAM permissions, and integration testing against the target environment.
+
+The database uses SQLite by default for local development and supports PostgreSQL through the `DATABASE_URL` configuration.
 
 ```text
-   AWS Environment (Future)              Local Mock Scenarios (Default)
-   CloudTrail / CloudWatch / IAM         Synthetic Baseline + Injected
-   EC2 / EBS / RDS / S3 / Cost           Waste, Breach & Bot Scenarios
-                │                                      │
-                └──────────────┬───────────────────────┘
-                               ▼
-                 TelemetryProvider Interface
-                  (DATA_SOURCE=mock | aws)
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         ▼                     ▼                     ▼
-   Rule Correlator       ML Detector           Resource / Backup
-   (correlator.py)     (IsolationForest)         Auditor
-         └─────────────────────┼─────────────────────┘
-                               ▼
-                    Unified Risk Scorer
-                     (risk_scorer.py)
-                               │
-                               ▼
-                  AI Incident Explainer
-              (LLM API + Template Fallback)
-                               │
-                               ▼
-              SQLAlchemy ORM (SQLite / PostgreSQL)
-        cloud_resources │ telemetry_metrics │ security_alerts │ recommendations
-                               │
-                               ▼
-                 FastAPI REST API (/api/v1/*)
-                               │
-                               ▼
-            Standalone React Dashboard (frontend/)
+       AWS Environment                         Local Mock Scenarios
+  CloudWatch / CloudTrail / IAM          Synthetic Baseline + Injected
+  EC2 / EBS / Cost Explorer               Waste, Breach & Bot Events
+              │                                      │
+              ▼                                      ▼
+      Boto3 AWS Collectors                    Mock Telemetry
+              │                                      │
+              └──────────────────┬───────────────────┘
+                                 ▼
+                      Normalized Telemetry
+                                 │
+               ┌─────────────────┼─────────────────┐
+               ▼                 ▼                 ▼
+         Event Correlator    ML Detector     Resource Auditor
+         correlator.py       ml_detector.py    auditor.py
+               └─────────────────┼─────────────────┘
+                                 ▼
+                         Unified Risk Scorer
+                          risk_scorer.py
+                                 │
+                                 ▼
+                       AI Incident Explainer
+                     LLM API + Fallback Logic
+                                 │
+                                 ▼
+                       SQLAlchemy ORM Layer
+                SQLite / PostgreSQL Database
+                                 │
+                                 ▼
+                       FastAPI REST API
+                           /api/v1/*
+                                 │
+                                 ▼
+                     React Dashboard
+                         frontend/
 ```
 
 ### Key Architectural Choices
-- **Standalone Web App vs. Native AWS Console:** Built as an independent SPA so correlation views, custom risk breakdowns, and AI explanations are not constrained by CloudWatch/Security Hub UIs.
-- **Single Relational DB (`JSON` columns over dual Postgres + Elasticsearch/MongoDB):** Structured entities and JSON payloads (correlated event IDs, signal breakdowns, resource metadata) live in one SQLAlchemy schema, avoiding multi-database sync overhead.
-- **Provider Abstraction:** Upstream ML, correlation, API routes, and UI never call `boto3` directly; they read normalized telemetry through a `TelemetryProvider` contract.
-- **Safe Remediation:** Recommendations transition through human-approved states (`pending` → `approved` / `dismissed`) rather than auto-terminating infrastructure unprompted.
+
+- **Standalone Web Application:** AWSense is built as an independent web application, allowing it to present correlated incidents, risk breakdowns, and AI explanations through its own dashboard.
+- **Single Relational Database:** SQLAlchemy models store cloud resources, telemetry metrics, security alerts, and recommendations. JSON columns retain structured incident data such as signal breakdowns and correlated event IDs.
+- **Telemetry Provider Abstraction:** Telemetry is normalized before being processed by the detection and analysis services. This allows mock data and AWS telemetry collectors to support the same general processing workflow.
+- **Unified Risk Scoring:** The risk scorer combines IAM, resource, cost, traffic, and ML signals into a composite incident risk score and severity.
+- **AI Explanation Fallback:** Incident explanations use the AI service when configured and deterministic fallback logic when an AI API key is unavailable.
+- **Safe Remediation:** Recommendations require human review and support approval or dismissal rather than automatically modifying or terminating cloud infrastructure.
 
 ---
 
 ## 4. Repository Structure
 
 ### Current Files
+
 ```text
 AWSense/
-├── .gitignore                        # Python, venv, *.db/*.sqlite*, pytest cache, Node/Next ignores
-├── pyrightconfig.json                # Binds IDE Python analyzer to backend/.venv and backend/ root
-├── README.md                         # High-level project overview and architecture
+├── .gitignore
+├── pyrightconfig.json
+├── README.md
 ├── docs/
-│   ├── api-contract.json             # Starter API contract (GET /api/v1/alerts example)
-│   ├── architecture-and-codebase.md  # This reference document
-│   ├── day-1-tasks.md                # 5 isolated Day 1 workstreams
-│   └── task-distribution.md          # 5-role engineering responsibility matrix (pre/post-AWS)
+│   ├── api-contract.json
+│   ├── architecture-and-codebase.md
+│   ├── day-1-tasks.md
+│   └── task-distribution.md
 ├── frontend/
-│   └── init.txt                      # Placeholder prior to Vite/React scaffold
+│   └── src/
+│       ├── services/
+│       │   └── adapters.js
+│       └── components/
+│           └── SimulatePanel.jsx
 └── backend/
-    ├── .env.example                  # Sample DATABASE_URL and SQL_ECHO settings
-    ├── pytest.ini                    # Sets pythonpath=. and testpaths=tests
-    ├── requirements.txt              # Python 3.12+ binary-wheel-compatible dependencies
+    ├── .env.example
+    ├── pytest.ini
+    ├── requirements.txt
     ├── app/
-    │   ├── __init__.py
-    │   ├── main.py                   # FastAPI app, permissive CORS, / and /api/v1/health
-    │   ├── api/                      # (Empty) Target for domain APIRouter modules
+    │   ├── main.py
+    │   ├── api/
+    │   │   ├── alerts.py
+    │   │   ├── overview.py
+    │   │   ├── recommendations.py
+    │   │   ├── resources.py
+    │   │   ├── simulate.py
+    │   │   └── traffic.py
     │   ├── core/
-    │   │   ├── __init__.py
-    │   │   └── database.py           # Engine factory, Base, SessionLocal, create_tables(), get_db()
+    │   │   └── database.py
     │   ├── models/
-    │   │   ├── __init__.py           # Re-exports all ORM classes and enums
-    │   │   └── entities.py           # CloudResource, TelemetryMetric, SecurityAlert, Recommendation
-    │   └── services/                 # (Empty) Target for telemetry, correlation, ML, and AI modules
+    │   │   └── entities.py
+    │   └── services/
+    │       ├── ai_explainer.py
+│   │       ├── auditor.py
+│   │       ├── correlator.py
+│   │       ├── mock_generator.py
+│   │       ├── ml_detector.py
+│   │       ├── ml_eval.py
+│   │       ├── repository.py
+│   │       ├── risk_scorer.py
+│   │       └── telemetry_provider.py
     └── tests/
-        └── test_database.py          # 4 pytest tests verifying DB config, schema, FKs, and get_db()
+        ├── test_api_routes.py
+        ├── test_auditor_and_simulate.py
+        ├── test_codebase_smoke.py
+        ├── test_correlator.py
+        ├── test_database.py
+        ├── test_ml_ai.py
+        ├── test_repository.py
+        └── test_telemetry_provider.py
 ```
 
-### Planned Module Targets
-- `backend/app/services/telemetry_provider.py` — `TelemetryProvider` base interface + `Boto3TelemetryProvider` stub
-- `backend/app/services/mock_generator.py` — `MockTelemetryProvider` & scenario generator
-- `backend/app/services/correlator.py` — multi-signal time-window event correlation
-- `backend/app/services/ml_detector.py` — Scikit-learn `IsolationForest` anomaly scorer
-- `backend/app/services/risk_scorer.py` — weighted composite risk scoring (`0–100`)
-- `backend/app/services/ai_explainer.py` — LLM explanation generator with deterministic template fallback
-- `backend/app/api/{overview,resources,alerts,traffic,recommendations}.py` — FastAPI routers registered in `app/main.py`
-- `frontend/` — Vite + React + Tailwind CSS + Recharts dashboard application
+### Implemented Module Responsibilities
 
----
+- **`backend/app/api/`** — FastAPI routers for overview, resources, alerts, traffic, recommendations, and simulation.
+- **`backend/app/core/database.py`** — SQLAlchemy engine, session management, database configuration, and table creation helpers.
+- **`backend/app/models/entities.py`** — ORM models and enums for cloud resources, telemetry metrics, security alerts, and recommendations.
+- **`backend/app/services/`** — Telemetry processing, resource auditing, anomaly detection, event correlation, risk scoring, AI explanations, ML evaluation, and persistence helpers.
+- **`backend/tests/`** — Database, API route, auditor, and simulation tests.
+- **`frontend/src/services/adapters.js`** — Frontend API data adaptation utilities.
+- **`frontend/src/components/SimulatePanel.jsx`** — Dashboard simulation interface.
 
-## 5. Implemented Codebase Reference
+### Future Integration
 
-### 5.1 Database Configuration (`backend/app/core/database.py`)
-Imports `load_dotenv` against `backend/.env` and configures SQLAlchemy 2.0:
-- `DEFAULT_SQLITE_URL`: `sqlite:///<repo>/backend/awsense.db` (POSIX path).
-- `get_database_url() -> str`: Returns `os.getenv("DATABASE_URL") or DEFAULT_SQLITE_URL`.
-- `Base(DeclarativeBase)`: Shared declarative base for all ORM models.
-- `build_engine(database_url: str | None = None) -> Engine`:
-  - Reads `SQL_ECHO` (`"true"` enables SQL query logging).
-  - For SQLite URLs: sets `connect_args={"check_same_thread": False}` and attaches a `"connect"` listener executing `PRAGMA foreign_keys=ON`.
-  - For non-SQLite URLs (e.g., PostgreSQL): enables `pool_pre_ping=True`.
-- `engine: Engine`: Module-level engine built from `get_database_url()`.
-- `SessionLocal`: `sessionmaker(autocommit=False, autoflush=False, bind=engine)`.
-- `create_tables(target_engine: Engine | None = None) -> None`: Imports `app.models.entities` so metadata is registered, then runs `Base.metadata.create_all(bind=target_engine or engine)`.
-- `get_db() -> Generator[Session, None, None]`: FastAPI dependency yielding a `Session` and closing it in `finally`.
-
-### 5.2 ORM Models & Enums (`backend/app/models/entities.py`)
-All enums inherit from `StrEnum` and are stored via `SqlEnum(..., native_enum=False)` using string values so schemas migrate cleanly between SQLite and PostgreSQL without native enum DDL conflicts.
-
-#### Enums
-- `ResourceType`: `ec2` | `ebs` | `rds` | `s3`
-- `BackupStatus`: `protected` | `missing` | `outdated` | `not_applicable`
-- `AlertSeverity`: `low` | `medium` | `high` | `critical`
-- `AlertStatus`: `open` | `investigating` | `resolved` | `dismissed`
-- `RecommendationCategory`: `cost` | `security` | `backup`
-- `RecommendationState`: `pending` | `approved` | `dismissed`
-
-#### Table: `cloud_resources` (`CloudResource`)
-| Column | Type | Constraints / Default | Purpose |
-|---|---|---|---|
-| `resource_id` | `String(128)` | PK | AWS resource identifier (e.g., `i-0abcd...`, `vol-...`) |
-| `name` | `String(255)` | Nullable | Friendly tag or display name |
-| `resource_type` | `ResourceType` | Not null, indexed | `ec2`, `ebs`, `rds`, or `s3` |
-| `region` | `String(64)` | Not null, indexed | AWS region (e.g., `us-east-1`) |
-| `status` | `String(32)` | Not null | Operational state (`running`, `available`, `idle`, etc.) |
-| `utilization_pct` | `Float` | Not null, default `0.0` | Current/average utilization percentage |
-| `backup_status` | `BackupStatus` | Not null, default `not_applicable` | Backup protection state |
-| `last_backup_at` | `DateTime(timezone=True)` | Nullable | Timestamp of most recent snapshot/backup |
-| `monthly_cost_usd` | `Float` | Not null, default `0.0` | Estimated monthly resource spend |
-| `metadata_json` | `JSON` | Not null, default `dict` | Extra tags, instance type, volume size, etc. |
-| `updated_at` | `DateTime(timezone=True)` | Not null, UTC now, `onupdate` | Last record update |
-
-Relationships: `metrics` (`cascade="all, delete-orphan"`), `alerts`, `recommendations` (`cascade="all, delete-orphan"`).
-
-#### Table: `telemetry_metrics` (`TelemetryMetric`)
-| Column | Type | Constraints / Default | Purpose |
-|---|---|---|---|
-| `id` | `Integer` | PK, autoincrement | Row ID |
-| `resource_id` | `String(128)` | FK → `cloud_resources.resource_id` (`CASCADE`), indexed | Parent resource |
-| `timestamp` | `DateTime(timezone=True)` | Not null, indexed | Sample timestamp |
-| `cpu_utilization` | `Float` | Not null, default `0.0` | CPU percentage (`0–100`) |
-| `network_in_bytes` | `Float` | Not null, default `0.0` | Inbound network bytes |
-| `network_out_bytes` | `Float` | Not null, default `0.0` | Outbound network bytes |
-| `request_count` | `Integer` | Not null, default `0` | Request volume in window |
-| `anomaly_score` | `Float` | Nullable | Normalized `0.0–1.0` ML anomaly score |
-
-#### Table: `security_alerts` (`SecurityAlert`)
-| Column | Type | Constraints / Default | Purpose |
-|---|---|---|---|
-| `alert_id` | `String(64)` | PK | Alert identifier |
-| `resource_id` | `String(128)` | FK → `cloud_resources.resource_id` (`SET NULL`), nullable, indexed | Associated resource if applicable |
-| `alert_type` | `String(64)` | Not null, indexed | Category (`behavioral_anomaly`, `bot_traffic`, etc.) |
-| `severity` | `AlertSeverity` | Not null, indexed | `low`, `medium`, `high`, or `critical` |
-| `risk_score` | `Float` | Not null, default `0.0` | Composite risk score (`0–100`) |
-| `title` | `String(255)` | Not null | Short incident headline |
-| `correlated_event_ids` | `JSON` (`list[str]`) | Not null, default `list` | Linked CloudTrail/CloudWatch/Billing IDs |
-| `signal_breakdown` | `JSON` (`dict[str, Any]`) | Not null, default `dict` | Factor scores (`ml_score`, `iam_risk`, etc.) |
-| `ai_summary` | `Text` | Nullable | Human-readable AI incident summary |
-| `recommended_actions` | `JSON` (`list[str]`) | Not null, default `list` | Ordered remediation checklist |
-| `status` | `AlertStatus` | Not null, default `open`, indexed | Workflow state |
-| `created_at` | `DateTime(timezone=True)` | Not null, UTC now, indexed | Alert creation timestamp |
-
-#### Table: `recommendations` (`Recommendation`)
-| Column | Type | Constraints / Default | Purpose |
-|---|---|---|---|
-| `recommendation_id` | `String(64)` | PK | Recommendation identifier |
-| `resource_id` | `String(128)` | FK → `cloud_resources.resource_id` (`CASCADE`), indexed | Target resource |
-| `category` | `RecommendationCategory` | Not null, indexed | `cost`, `security`, or `backup` |
-| `title` | `String(255)` | Not null | Short summary |
-| `action` | `Text` | Not null | Specific suggested action |
-| `rationale` | `Text` | Nullable | Supporting utilization/risk evidence |
-| `estimated_monthly_savings_usd` | `Float` | Not null, default `0.0` | Projected monthly savings |
-| `confidence` | `String(16)` | Not null, default `"high"` | Recommendation confidence |
-| `state` | `RecommendationState` | Not null, default `pending`, indexed | Approval state (`pending`, `approved`, `dismissed`) |
-| `created_at` | `DateTime(timezone=True)` | Not null, UTC now | Creation timestamp |
-| `updated_at` | `DateTime(timezone=True)` | Not null, UTC now, `onupdate` | Last state change |
-
-### 5.3 FastAPI Entry Point (`backend/app/main.py`)
-- Instantiates `app = FastAPI(title="AWSense API", version="1.0.0")`.
-- Enables permissive `CORSMiddleware` (`allow_origins=["*"]` for local dev).
-- Exposes `GET /` (`{"status": "ok", "message": "Welcome to AWSense API"}`) and `GET /api/v1/health` (`{"status": "healthy"}`).
+The application currently supports mock and simulated workflows. Connecting a live AWS environment requires configuring credentials and validating the AWS telemetry provider against the target account and permissions.
 
 ### 5.4 Dependencies & Configuration
 - `backend/requirements.txt`: Lower-bounded `<next-major` ranges ensuring Python 3.12+ binary wheel installation:
@@ -236,89 +188,150 @@ Relationships: `metrics` (`cascade="all, delete-orphan"`), `alerts`, `recommenda
 - `backend/pytest.ini`: Sets `pythonpath = .` and `testpaths = tests`.
 - `backend/.env.example`: Defaults `DATABASE_URL=sqlite:///./awsense.db`, `SQL_ECHO=false`, with commented PostgreSQL example.
 
-### 5.5 Existing Tests (`backend/tests/test_database.py`)
-Currently verified (`4 passed`):
-1. `test_get_database_url_fallback_and_override` — checks SQLite fallback and `DATABASE_URL` env override.
-2. `test_create_tables_and_roundtrip` — calls `create_tables()`, inserts 1 row into all 4 tables, verifies reads, JSON columns, enums, and ORM relationships.
-3. `test_sqlite_foreign_keys_and_delete_behaviors` — confirms missing FK raises `IntegrityError`, deleting `CloudResource` cascades to `TelemetryMetric` and `Recommendation`, and sets `SecurityAlert.resource_id = None`.
-4. `test_get_db_dependency_yields_and_closes` — checks `get_db()` generator lifecycle.
+### 5.5 Existing Tests
 
+The backend test suite is located in `backend/tests/` and covers database operations, API routes, resource auditing, simulation behavior, telemetry, event correlation, ML/AI services, and repository persistence.
+
+Implemented test modules include:
+
+- **`test_api_routes.py`** — Tests dashboard API endpoints and FastAPI route behavior.
+- **`test_auditor_and_simulate.py`** — Tests resource auditing, simulation scenarios, risk scoring, persisted alert signal breakdowns, and idempotent recommendation persistence.
+- **`test_codebase_smoke.py`** — Performs smoke tests to verify core application modules and routes.
+- **`test_correlator.py`** — Tests event correlation behavior.
+- **`test_database.py`** — Verifies database configuration, table creation, ORM relationships, foreign key behavior, and session lifecycle.
+- **`test_ml_ai.py`** — Tests ML anomaly detection and AI explanation services.
+- **`test_repository.py`** — Tests database repository operations.
+- **`test_telemetry_provider.py`** — Tests telemetry provider behavior and data collection.
+
+Run the complete backend test suite from the repository root:
+
+```powershell
+backend\.venv\Scripts\python.exe -m pytest backend\tests -v
+```
 ---
 
-## 6. Planned Subsystems & Core Scenarios
+## 6. Implemented Subsystems & Core Scenarios
 
 ### Core Detection Scenarios
-1. **Resource Waste & Backup Gaps:**
-   - EC2 instances averaging low CPU (e.g., ~7%) → downsize/schedule recommendation.
-   - Unattached EBS volumes → snapshot & delete recommendation.
-   - Critical RDS instances without recent backups/snapshots → backup protection alert (`backup_status = missing`).
-2. **IAM Breach + Compute Surge:**
-   - Unusual IAM login (off-hours / unseen region) + multiple new EC2 launches + security group change + network traffic jump + daily cost spike → correlated high-risk security & cost incident.
-3. **Automated Bot / Scraper Traffic:**
-   - High-frequency repetitive requests on specific endpoints → correlated EC2 CPU spike, high network out, and higher daily spend → WAF/rate-limit/caching recommendations.
 
-### Planned Service Responsibilities
-- **Telemetry Ingestion (`telemetry_provider.py`, `mock_generator.py`):** Exposes `get_resources()`, `get_metrics()`, `get_cloudtrail_events()`, `get_traffic_logs()`, and `get_cost_usage()`. Default implementation returns deterministic baseline + anomaly scenarios; `Boto3TelemetryProvider` implements the same interface when AWS sandbox credentials exist.
-- **ML Anomaly Detection (`ml_detector.py`):** Trains/runs Scikit-learn `IsolationForest` on `[cpu_utilization, network_in_bytes, network_out_bytes, request_count]` vectors and normalizes output to `0.0–1.0`.
-- **Event Correlation (`correlator.py`):** Groups IAM/CloudTrail events, metric spikes, traffic anomalies, and billing jumps within a time window into linked `correlated_event_ids`.
-- **Unified Risk Scoring (`risk_scorer.py`):** Combines `ml_score`, `iam_risk`, `resource_impact`, `cost_impact`, and `traffic_anomaly` into a `0–100` score and `low|medium|high|critical` severity.
-- **AI Explainer (`ai_explainer.py`):** Formats correlated signals into an LLM prompt to produce `ai_summary` and `recommended_actions`, with a deterministic template fallback when no LLM API key is configured.
+1. **Resource Waste & Backup Gaps**
+   - Detects underutilized EC2 instances and unattached EBS volumes.
+   - Identifies resources with missing or outdated backups.
+   - Generates cost optimization and backup recommendations.
 
-### Planned API Endpoints (`/api/v1`)
-- `GET /api/v1/overview` — Global health score, active incident summary, total estimated monthly savings, metric/cost trend series.
-- `GET /api/v1/resources` — Resource inventory (`CloudResource`), utilization, and backup status.
-- `GET /api/v1/alerts` — Correlated `SecurityAlert` feed with `signal_breakdown` and `ai_summary` (starter shape documented in `docs/api-contract.json`).
-- `GET /api/v1/traffic` — Request volume time-series, flagged endpoint patterns, and resource/cost impact.
-- `GET /api/v1/recommendations` — Prioritized cost/security/backup `Recommendation` list.
-- `POST /api/v1/recommendations/{id}/action` — Transition recommendation `state` (`approved` / `dismissed`).
-- `POST /api/v1/simulate` — Injects a live breach or bot scenario for demonstration.
+2. **IAM Breach + Compute Surge**
+   - Simulates suspicious IAM activity and related resource or traffic changes.
+   - Calculates incident risk using the unified risk scoring service.
+   - Persists the resulting incident alert and recommendations.
 
-### Planned Frontend Views (`frontend/`)
-Vite + React + Tailwind CSS + Recharts dark-mode SPA with 5 navigation pages:
-1. **Overview** — KPI stat cards, risk indicator, correlated telemetry charts.
-2. **Resources & Backups** — Filterable inventory table with utilization & backup warnings.
-3. **Security & Correlation** — Alert feed, risk factor breakdown, AI incident explanation panel.
-4. **Traffic & Bots** — Request rate vs. CPU/cost charts and bot pattern flags.
-5. **Recommendations** — Action cards with savings estimates and `Approve` / `Dismiss` controls.
+3. **Automated Bot / Scraper Traffic**
+   - Simulates abnormal request patterns and their potential impact on compute utilization and cost.
+   - Uses traffic anomaly signals as part of the overall risk assessment.
+   - Provides incident context and remediation recommendations.
+
+### Implemented Service Responsibilities
+
+- **Telemetry Ingestion (`telemetry_provider.py`, `mock_generator.py`):** Provides normalized telemetry through mock and AWS-based providers, including Boto3 telemetry collectors.
+- **ML Anomaly Detection (`ml_detector.py`):** Uses IsolationForest-based anomaly detection to identify unusual telemetry patterns.
+- **Event Correlation (`correlator.py`):** Correlates security and telemetry signals into incident context and associated event IDs.
+- **Unified Risk Scoring (`risk_scorer.py`):** Calculates a composite risk score using ML, IAM, resource, cost, and traffic factors, producing a score and severity.
+- **AI Explainer (`ai_explainer.py`):** Generates incident explanations and recommended actions, with a deterministic fallback when an AI API key is unavailable.
+- **Resource Auditing (`auditor.py`):** Audits resource utilization, unattached volumes, and backup protection gaps.
+- **ML Evaluation (`ml_eval.py`):** Provides evaluation utilities for anomaly detection.
+- **Repository Persistence (`repository.py`):** Provides database persistence helpers for resources, alerts, and recommendations.
+- **Simulation (`api/simulate.py`):** Runs the supported scenarios, calculates risk through the unified risk scorer, and persists simulated resources, alerts, and recommendations.
+
+### Simulation Risk Breakdown & Idempotency
+
+The simulation API uses `score_risk()` rather than hardcoded scenario risk scores.
+
+The persisted alert `signal_breakdown` includes the following factors:
+
+- `iam_risk`
+- `resource_impact`
+- `cost_impact`
+- `traffic_anomaly`
+- `ml_score`
+- `total_cost_delta_usd`
+
+Alerts also persist `correlated_event_ids` to retain the associated event context.
+
+Simulation alerts use stable scenario-based identifiers. Recommendation persistence is idempotent per simulated scenario and resource: previous simulation recommendations for the same resource are replaced instead of accumulating duplicates when the scenario is repeated.
+
+### Implemented API Endpoints
+
+The FastAPI application exposes dashboard endpoints under `/api/v1`, including:
+
+- `GET /api/v1/overview`
+- `GET /api/v1/resources`
+- `GET /api/v1/alerts`
+- `GET /api/v1/traffic`
+- `GET /api/v1/recommendations`
+- `POST /api/v1/recommendations/{id}/action`
+- `POST /api/v1/simulate`
+
+### Frontend Integration
+
+The dashboard includes React components and API integration utilities, including `src/services/adapters.js` and `SimulatePanel.jsx`, for displaying backend data and running simulation scenarios.
 
 ---
 
 ## 7. Local Setup & Verification Commands
 
 ### Environment Setup (Windows PowerShell)
-Using `uv` with Python 3.12 and prebuilt wheels only (avoids C++ source builds on Windows):
-```powershell
-uv venv backend\.venv --python 3.12
-uv pip install --python backend\.venv\Scripts\python.exe --only-binary :all: -r backend\requirements.txt
-```
-*(Fallback with standard `venv`/`pip`: `python -m venv backend\.venv` then `backend\.venv\Scripts\pip install -r backend\requirements.txt`.)*
 
-Optional environment file:
+The backend virtual environment is already created at `backend/.venv`.
+
+To install or update the backend dependencies, run the following command from the repository root:
+
+```powershell
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+```
+
+Optional environment configuration:
+
 ```powershell
 Copy-Item backend\.env.example backend\.env
 ```
 
 ### Running Tests
-From repository root:
+
+Run the resource auditing and simulation tests:
+
+```powershell
+backend\.venv\Scripts\python.exe -m pytest backend\tests\test_auditor_and_simulate.py -v
+```
+
+Run all backend tests:
+
 ```powershell
 backend\.venv\Scripts\python.exe -m pytest backend\tests -v
 ```
-*(Or inside `backend/`: `.\.venv\Scripts\python.exe -m pytest -v`.)*
 
 ### Running the Backend Server
-From `backend/`:
+
+From the repository root, start the FastAPI application:
+
 ```powershell
-.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
+backend\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000 --app-dir backend
 ```
-Interactive OpenAPI docs are served at `http://localhost:8000/docs`.
+
+The interactive API documentation is available at:
+
+`http://localhost:8000/docs`
 
 ---
 
 ## 8. Design Decisions & Known Caveats
 
-1. **PostgreSQL Driver Not Installed by Default:** `DATABASE_URL` supports PostgreSQL URLs in `build_engine()`, but `psycopg2-binary` (or `psycopg`) is not yet in `backend/requirements.txt`. Add it before connecting to a live Postgres server.
-2. **No Schema Migrations (Alembic):** Tables are created via `Base.metadata.create_all()` (`create_tables()`). Modifying columns on existing models requires deleting and recreating local `awsense.db` (or dropping/recreating tables in Postgres).
-3. **`create_tables()` Startup Wiring:** `backend/app/main.py` does not call `create_tables()` yet; wire it into FastAPI lifespan/startup once the API routers are integrated.
-4. **SQLite Timezone Stripping:** `DateTime(timezone=True)` works across both engines, but SQLite returns naive `datetime` instances on read while PostgreSQL returns timezone-aware `datetime` instances. Normalize `tzinfo` before comparing timestamps in Python.
-5. **FastAPI `TestClient` / `httpx` Warning:** Starlette 1.10 logs a `StarletteDeprecationWarning` preferring `httpx2` over `httpx` when importing `TestClient`. Note also that `TestClient` spawns an internal AnyIO portal socketpair that can hang inside restricted Windows sandboxes; run HTTP-level tests in a normal terminal.
-6. **IDE Analyzer Alignment:** If VS Code / Antigravity IDE flags imports after pulling or recreating `.venv`, run **Python: Restart Language Server** so it reloads `pyrightconfig.json`.
+1. **PostgreSQL Driver Not Installed by Default:** `DATABASE_URL` supports PostgreSQL URLs in `build_engine()`, but `psycopg2-binary` (or `psycopg`) is not yet in `backend/requirements.txt`. Add it before connecting to a live PostgreSQL server.
+
+2. **No Schema Migrations (Alembic):** Tables are created through `Base.metadata.create_all()` using `create_tables()`. Modifying columns on existing models requires deleting and recreating the local `awsense.db` database or dropping and recreating the affected tables in PostgreSQL.
+
+3. **Database Initialization:** The FastAPI lifespan handler in `backend/app/main.py` calls `create_tables()` during application startup and initializes the database with seed data.
+
+4. **SQLite Timezone Stripping:** `DateTime(timezone=True)` works across both engines, but SQLite may return naive `datetime` instances when reading records, while PostgreSQL returns timezone-aware instances. Normalize `tzinfo` before comparing timestamps in Python.
+
+5. **FastAPI `TestClient` / `httpx` Warning:** Starlette may log a deprecation warning recommending `httpx2` instead of `httpx` when importing `TestClient`. In restricted Windows environments, `TestClient` may also encounter issues with its internal AnyIO portal socketpair. Run HTTP-level tests in a normal terminal environment if needed.
+
+6. **IDE Analyzer Alignment:** If VS Code or another IDE flags imports after pulling changes or recreating `.venv`, run **Python: Restart Language Server** so it reloads `pyrightconfig.json` and the configured Python environment.
