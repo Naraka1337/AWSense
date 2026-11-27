@@ -1,4 +1,6 @@
 import json
+import logging
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -90,3 +92,63 @@ def test_incident_explainer(monkeypatch, provider):
             "summary": "Unexpected cost on test-resource.",
             "recommended_actions": ["1. Review recent billing records."],
         }
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+@pytest.mark.parametrize(
+    ("failure", "error_type"),
+    [
+        ("network", "URLError"),
+        ("http", "HTTPError"),
+        ("timeout", "TimeoutError"),
+        ("invalid_json", "JSONDecodeError"),
+        ("missing_fields", "KeyError"),
+        ("empty_results", "IndexError"),
+        ("wrong_shape", "TypeError"),
+        ("invalid_actions", "ValueError"),
+    ],
+)
+def test_explainer_falls_back_on_provider_failure(
+    monkeypatch, caplog, provider, failure, error_type,
+):
+    for key in ("LLM_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    incident = {
+        "title": "Cost spike",
+        "resource_ids": ["test-resource"],
+        "signals": [{"type": "cost_delta"}],
+        "cost_delta_usd": 125,
+    }
+    expected = ai_explainer.explain_incident(incident)
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
+
+    def fake_post(url, headers, payload):
+        if failure == "network":
+            raise URLError("provider-only details")
+        if failure == "http":
+            raise HTTPError(url, 503, "provider-only details", {}, None)
+        if failure == "timeout":
+            raise TimeoutError("provider-only details")
+        if failure == "empty_results":
+            return {"choices": []} if provider == "openai" else {"candidates": []}
+        if failure == "wrong_shape":
+            return None
+
+        content = "invalid JSON"
+        if failure == "missing_fields":
+            content = '{"summary": "Partial provider reply"}'
+        if failure == "invalid_actions":
+            content = '{"summary": "Partial provider reply", "recommended_actions": []}'
+        if provider == "openai":
+            return {"choices": [{"message": {"content": content}}]}
+        return {"candidates": [{"content": {"parts": [{"text": content}]}}]}
+
+    monkeypatch.setattr(ai_explainer, "_post_json", fake_post)
+    with caplog.at_level(logging.WARNING, logger=ai_explainer.__name__):
+        assert ai_explainer.explain_incident(incident) == expected
+
+    assert len(caplog.records) == 1
+    assert error_type in caplog.text
+    assert "deterministic template" in caplog.text
+    assert "provider-only details" not in caplog.text
+    assert "test-key" not in caplog.text
