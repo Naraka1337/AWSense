@@ -21,3 +21,6 @@ out/
 
 # IDE
 .vscode/
+
+# Local presentation prep bundle
+docs/presentation-pack/
