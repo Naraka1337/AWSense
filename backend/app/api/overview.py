@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.alerts import score_alerts
 from app.core.database import get_db
 from app.models.entities import (
     AlertSeverity,
@@ -203,41 +204,43 @@ def get_overview(
         db.scalars(select(Recommendation)).all()
     )
 
+    scored_alerts = score_alerts(db, alerts)
+
     critical_count = sum(
-        1 for alert in alerts
-        if alert.severity == AlertSeverity.CRITICAL
+        1 for _, severity in scored_alerts
+        if severity == AlertSeverity.CRITICAL
     )
     high_count = sum(
-        1 for alert in alerts
-        if alert.severity == AlertSeverity.HIGH
+        1 for _, severity in scored_alerts
+        if severity == AlertSeverity.HIGH
     )
     medium_count = sum(
-        1 for alert in alerts
-        if alert.severity == AlertSeverity.MEDIUM
+        1 for _, severity in scored_alerts
+        if severity == AlertSeverity.MEDIUM
     )
     low_count = sum(
-        1 for alert in alerts
-        if alert.severity == AlertSeverity.LOW
+        1 for _, severity in scored_alerts
+        if severity == AlertSeverity.LOW
     )
 
     active_alerts = AlertCountBreakdown(
-        total=len(alerts),
+        total=len(scored_alerts),
         critical=critical_count,
         high=high_count,
         medium=medium_count,
         low=low_count,
     )
 
-    if alerts:
+    if scored_alerts:
         highest_severity = max(
-            (alert.severity for alert in alerts),
+            (severity for _, severity in scored_alerts),
             key=lambda severity: _SEVERITY_RANK[severity],
         )
     else:
         highest_severity = AlertSeverity.LOW
 
     highest_risk_score = max(
-        (float(alert.risk_score) for alert in alerts),
+        (score for score, _ in scored_alerts),
         default=0.0,
     )
 

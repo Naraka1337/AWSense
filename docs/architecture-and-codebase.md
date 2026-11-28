@@ -116,13 +116,21 @@ The database uses SQLite by default for local development and supports PostgreSQ
 ```text
 AWSense/
 ├── .gitignore
+├── LICENSE
 ├── pyrightconfig.json
 ├── README.md
 ├── docs/
 │   ├── api-contract.json
 │   ├── architecture-and-codebase.md
+│   ├── awsense-a-to-z.md
 │   ├── day-1-tasks.md
-│   └── task-distribution.md
+│   ├── day-2-tasks.md
+│   ├── day-3-tasks.md
+│   ├── day-4-tasks.md
+│   ├── day-5-6-tasks.md
+│   ├── system-analysis-and-design.md
+│   ├── task-distribution.md
+│   └── verification-report.md
 ├── frontend/
 │   └── src/
 │       ├── services/
@@ -159,10 +167,12 @@ AWSense/
     └── tests/
         ├── test_api_routes.py
         ├── test_auditor_and_simulate.py
+        ├── test_boto3_provider.py
         ├── test_codebase_smoke.py
         ├── test_correlator.py
         ├── test_database.py
         ├── test_ml_ai.py
+        ├── test_ml_eval.py
         ├── test_repository.py
         └── test_telemetry_provider.py
 ```
@@ -265,6 +275,7 @@ The FastAPI application exposes dashboard endpoints under `/api/v1`, including:
 - `GET /api/v1/overview`
 - `GET /api/v1/resources`
 - `GET /api/v1/alerts`
+- `POST /api/v1/alerts/{alert_id}/status`
 - `GET /api/v1/traffic`
 - `GET /api/v1/recommendations`
 - `POST /api/v1/recommendations/{id}/action`
@@ -328,7 +339,7 @@ The interactive API documentation is available at:
 
 2. **No Schema Migrations (Alembic):** Tables are created through `Base.metadata.create_all()` using `create_tables()`. Modifying columns on existing models requires deleting and recreating the local `awsense.db` database or dropping and recreating the affected tables in PostgreSQL.
 
-3. **Database Initialization:** The FastAPI lifespan handler in `backend/app/main.py` calls `create_tables()` during application startup and initializes the database with seed data.
+3. **Database Initialization:** The FastAPI lifespan handler in `backend/app/main.py` calls `create_tables()` during application startup and initializes the database with seed data using `get_telemetry_provider()` (`DATA_SOURCE=mock` by default).
 
 4. **SQLite Timezone Stripping:** `DateTime(timezone=True)` works across both engines, but SQLite may return naive `datetime` instances when reading records, while PostgreSQL returns timezone-aware instances. Normalize `tzinfo` before comparing timestamps in Python.
 

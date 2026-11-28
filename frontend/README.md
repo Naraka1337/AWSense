@@ -13,4 +13,6 @@ Copy `.env.example` to `.env`, set `VITE_USE_MOCK=false`, and start FastAPI on `
 All calls go through `src/services/api.js`. Fixtures live in `src/mock/`.
 
 Expected endpoints (prefix `/api/v1`): `GET /overview`, `/resources`, `/alerts`, `/traffic`, `/recommendations`,
-and `POST /recommendations/{id}/action` with body `{"action": "approved" | "dismissed"}`.
+`POST /alerts/{id}/status` with body `{"status": "open" | "investigating" | "resolved" | "dismissed"}`,
+`POST /recommendations/{id}/action` with body `{"action": "pending" | "approved" | "dismissed"}`,
+and `POST /simulate` with body `{"scenario": "iam_breach" | "bot_traffic" | "resource_waste"}`.

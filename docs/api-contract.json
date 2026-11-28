@@ -1,18 +1,207 @@
 {
-  "description": "Initial API Contract for AWSense",
+  "description": "Live REST API Contract for AWSense (/api/v1)",
+  "version": "1.0.0",
+  "baseUrl": "http://localhost:8000",
   "endpoints": {
-    "GET /api/v1/alerts": {
-      "description": "Fetch a list of recent security/cost anomalies.",
+    "GET /api/v1/health": {
+      "description": "Service liveness check.",
       "response": {
-        "status": "success",
-        "data": [
+        "status": "healthy"
+      }
+    },
+    "GET /api/v1/overview": {
+      "description": "Dashboard summary KPIs computed from DB state, shared alert scoring, and telemetry cost/metric history.",
+      "response": {
+        "health_score": 16.7,
+        "risk_level": "high",
+        "total_monthly_savings_usd": 2190.2,
+        "monthly_spend_usd": 3165.75,
+        "active_alerts": {
+          "total": 3,
+          "critical": 0,
+          "high": 1,
+          "medium": 1,
+          "low": 1
+        },
+        "monitored_resources": 14,
+        "unprotected_resources": 10,
+        "cost_usage_trend": [
           {
-            "id": "alert_12345",
-            "type": "behavioral_anomaly",
+            "date": "2026-10-23",
+            "daily_cost_usd": 45.0,
+            "avg_cpu_pct": 28.4,
+            "request_count": 142000
+          }
+        ]
+      }
+    },
+    "GET /api/v1/resources": {
+      "description": "Inventory with utilization and backup status; supports resource_type, region, and backup_status query params.",
+      "response": {
+        "summary": {
+          "total": 14,
+          "total_monthly_cost_usd": 3165.75,
+          "unprotected_count": 10,
+          "underutilized_count": 2
+        },
+        "resources": [
+          {
+            "resource_id": "db-prod-orders-01",
+            "name": "orders-primary-rds",
+            "resource_type": "rds",
+            "region": "us-east-1",
+            "status": "available",
+            "utilization_pct": 54.3,
+            "backup_status": "missing",
+            "last_backup_at": null,
+            "monthly_cost_usd": 412.25,
+            "metadata": {}
+          }
+        ]
+      }
+    },
+    "GET /api/v1/alerts": {
+      "description": "Correlated incidents scored via 5-factor score_risk() and IsolationForest; supports severity and status filters.",
+      "response": {
+        "total": 3,
+        "alerts": [
+          {
+            "alert_id": "alert_inc_0001",
+            "resource_id": "i-0rogue0001",
+            "resource_ids": ["i-0rogue0001"],
+            "alert_type": "iam_compute_surge",
             "severity": "high",
-            "resource": "i-0abcd1234efgh5678",
-            "message": "Unusual IAM activity detected followed by EC2 creation.",
-            "timestamp": "2024-05-20T14:32:00Z"
+            "risk_score": 83.32,
+            "ml_score": 0.8094,
+            "title": "Suspected IAM Compromise & Compute Surge",
+            "correlated_event_ids": ["ct-9001", "ct-9002", "ct-9003"],
+            "signal_breakdown": {
+              "cloudtrail_count": 3,
+              "metric_spike_count": 1,
+              "cost_delta_count": 1,
+              "iam_risk": 94.0,
+              "resource_impact": 95.0,
+              "cost_impact": 96.0,
+              "traffic_anomaly": 0.0,
+              "total_cost_delta_usd": 420.5
+            },
+            "summary": "Correlated incident explanation.",
+            "recommended_actions": ["1. Revoke credentials."],
+            "status": "open",
+            "created_at": "2026-11-21T02:50:00Z"
+          }
+        ]
+      }
+    },
+    "POST /api/v1/alerts/{alert_id}/status": {
+      "description": "Persist alert lifecycle status ('open' | 'investigating' | 'resolved' | 'dismissed'); returns 404 on unknown alert_id.",
+      "request": {
+        "status": "investigating"
+      },
+      "response": {
+        "alert": {
+          "alert_id": "alert_inc_0001",
+          "status": "investigating"
+        },
+        "previous_status": "open",
+        "message": "Alert 'alert_inc_0001' updated from 'open' to 'investigating'"
+      }
+    },
+    "GET /api/v1/traffic": {
+      "description": "Request volume timeline, suspicious endpoint patterns, bot flags, and egress cost impact.",
+      "response": {
+        "request_rate_timeline": [
+          {
+            "timestamp": "2026-11-20T18:00:00Z",
+            "total_requests": 1380000,
+            "bot_requests": 1330320,
+            "avg_cpu_pct": 91.4,
+            "network_out_gb": 195.0
+          }
+        ],
+        "suspicious_endpoints": [
+          {
+            "endpoint": "/api/catalog/export",
+            "method": "GET",
+            "request_count_24h": 1380000,
+            "bot_share_pct": 96.4,
+            "bot_flagged": true,
+            "pattern_reason": "Sustained automated catalog scraping burst",
+            "top_user_agent": "python-requests/2.31.0"
+          }
+        ],
+        "bot_flags": {
+          "total_requests_24h": 2410000,
+          "flagged_bot_requests_24h": 2135560,
+          "bot_traffic_pct": 88.6,
+          "suspicious_ips_count": 32,
+          "flagged_endpoints_count": 3
+        },
+        "cost_impact": {
+          "affected_resource_id": "i-0a1b2c3d4e5f60002",
+          "estimated_daily_cost_usd": 138.2,
+          "estimated_monthly_cost_usd": 4146.0,
+          "added_egress_gb_24h": 342.0,
+          "cpu_overhead_pct": 57.6
+        }
+      }
+    },
+    "GET /api/v1/recommendations": {
+      "description": "Actionable cost, security, and backup recommendations; supports category and state filters.",
+      "response": {
+        "total": 5,
+        "total_estimated_monthly_savings_usd": 2190.2,
+        "recommendations": [
+          {
+            "recommendation_id": "rec_0001",
+            "resource_id": "i-0rogue0001",
+            "category": "security",
+            "title": "Quarantine and terminate 8 unauthorized EC2 instances",
+            "action": "Revoke ci-deploy-temp credentials...",
+            "rationale": "Launched after off-hours ConsoleLogin...",
+            "estimated_monthly_savings_usd": 1920.0,
+            "confidence": "high",
+            "state": "pending",
+            "created_at": "2026-11-28T00:00:00Z",
+            "updated_at": "2026-11-28T00:00:00Z"
+          }
+        ]
+      }
+    },
+    "POST /api/v1/recommendations/{recommendation_id}/action": {
+      "description": "Update recommendation state ('pending' | 'approved' | 'dismissed'); returns 404 on unknown recommendation_id.",
+      "request": {
+        "action": "approved"
+      },
+      "response": {
+        "recommendation": {
+          "recommendation_id": "rec_0001",
+          "state": "approved"
+        },
+        "previous_state": "pending",
+        "message": "Recommendation 'rec_0001' updated from 'pending' to 'approved'"
+      }
+    },
+    "POST /api/v1/simulate": {
+      "description": "Run a persistent threat/waste simulation scenario ('iam_breach' | 'bot_traffic' | 'resource_waste') scored via 5-factor score_risk().",
+      "request": {
+        "scenario": "iam_breach"
+      },
+      "response": {
+        "incident": {
+          "title": "Potential IAM Security Breach",
+          "risk_score": 68,
+          "severity": "high",
+          "summary": "Potential IAM Security Breach affects i-sim-iam-001...",
+          "recommended_actions": ["1. Review the correlated events..."]
+        },
+        "findings": ["Suspicious event: ConsoleLogin..."],
+        "recommendations": [
+          {
+            "title": "Secure suspicious IAM credentials",
+            "action": "Disable or rotate credentials for suspicious principals.",
+            "category": "security",
+            "priority": "critical"
           }
         ]
       }

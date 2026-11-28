@@ -222,21 +222,21 @@ Evaluating `MLDetector(threshold=0.70)` trained on 120 normal rows (`seed=42`, `
 ## 6. Layer 4: FastAPI REST Backend (`main.py` & `api/*.py`)
 
 ### Application Startup ([main.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/main.py))
-- Uses an async `lifespan` context manager (`AsyncGenerator[None, None]`) to call `database.create_tables()` and `seed_database(session)` automatically on server boot.
-- Enables CORS (`allow_origins=["*"]` for local dev) and mounts all 6 routers under `/api/v1`.
+- Uses an async `lifespan` context manager (`AsyncGenerator[None, None]`) to call `database.create_tables()` and `seed_database(session, provider=get_telemetry_provider())` automatically on server boot.
+- Enables CORS (reads `CORS_ORIGINS` env var, defaulting to `["*"]` for local dev) and mounts all 6 routers under `/api/v1`.
 
 ### Endpoint Reference
 | Method & Path | Backing Logic | Behavior |
 |---|---|---|
 | `GET /` & `GET /api/v1/health` | `main.py` | Basic liveness & health check (`{"status": "healthy"}`). |
-| `GET /api/v1/overview` | [overview.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/overview.py) | Queries DB resources, active alerts (`open`/`investigating`), and non-dismissed recommendations to compute `health_score` (`100 - penalties`), `risk_level`, savings, monthly spend, unprotected count, and joins DB `TelemetryMetric` with `MockTelemetryProvider` costs for the 30-day `cost_usage_trend`. |
+| `GET /api/v1/overview` | [overview.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/overview.py) | Queries DB resources, active alerts (`open`/`investigating`), and non-dismissed recommendations; scores active alerts via `alerts.score_alerts()` to compute `health_score` (`100 - max_risk_score`), `risk_level`, savings, monthly spend, unprotected count, and joins DB `TelemetryMetric` with `MockTelemetryProvider` costs for the 30-day `cost_usage_trend`. |
 | `GET /api/v1/resources` | [resources.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/resources.py) | Queries `list_resources(db)` with optional `resource_type`, `region`, and `backup_status` filters; calculates `ResourceSummary` (`total`, `total_monthly_cost_usd`, `unprotected_count`, `underutilized_count`). |
 | `GET /api/v1/alerts` | [alerts.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/alerts.py) | Queries `list_alerts(db)` (falling back to `_SAMPLE_ALERTS` only if DB is empty). Runs `score_metrics()` (`IsolationForest`) across stored `TelemetryMetric` rows, resolves `ml_score` directly or via security-group metadata / summary resource IDs, applies `score_risk()` to compute 5-factor `risk_score` and `severity`, fills missing explanations via `explain_incident()`, filters by `severity`/`status`, and sorts descending. |
 | `POST /api/v1/alerts/{alert_id}/status` | [alerts.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/alerts.py) | Updates `SecurityAlert.status` (`open \| investigating \| resolved \| dismissed`) in DB; returns `404` if missing, `422` if invalid. |
 | `GET /api/v1/traffic` | [traffic.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/traffic.py) | Calls `get_telemetry_provider().get_traffic_logs()` + `summarize_traffic_impact()` (`auditor.py`) + billing `AWSDataTransfer` deltas to build timeline, suspicious endpoints, bot flags, and daily/monthly cost impact. |
 | `GET /api/v1/recommendations` | [recommendations.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/recommendations.py) | Queries `list_recommendations(db)` with optional `category` and `state` filters and sums non-dismissed savings. |
 | `POST /api/v1/recommendations/{id}/action` | [recommendations.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/recommendations.py) | Persists `pending`, `approved`, or `dismissed` via `update_recommendation_state()` (supporting frontend **Undo**). Returns `404` or `422` on errors. |
-| `POST /api/v1/simulate` | [simulate.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/simulate.py) | Accepts `{"scenario": "iam_breach" \| "bot_traffic" \| "resource_waste"}`, runs `MockTelemetryProvider` + `auditor.py` checks, enriches summary/steps via `explain_incident()`, ensures simulated `CloudResource` (`i-sim-*`) exists, upserts `sim_alert_{scenario}`, and inserts simulated `Recommendation` rows into SQLite/PostgreSQL. |
+| `POST /api/v1/simulate` | [simulate.py](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/backend/app/api/simulate.py) | Accepts `{"scenario": "iam_breach" \| "bot_traffic" \| "resource_waste"}`, runs `MockTelemetryProvider` + `auditor.py` + `score_risk()`, enriches summary/steps via `explain_incident()`, ensures simulated `CloudResource` (`i-sim-*`) exists, upserts `sim_alert_{scenario}` (including 5-factor `signal_breakdown` and `correlated_event_ids`), and replaces `sim_{scenario}_###` `Recommendation` rows idempotently in SQLite/PostgreSQL. |
 
 ---
 
@@ -248,7 +248,7 @@ Evaluating `MLDetector(threshold=0.70)` trained on 120 normal rows (`seed=42`, `
 
 ### How `api.js` and `adapters.js` Connect to the Backend
 Backend APIs return wrapped snake_case payloads (`{ resources: [...] }`, `utilization_pct`, `backup_status: "outdated"`, `confidence: "high"`, `bot_traffic_pct: 94.1`), whereas React pages consume clean camelCase shapes:
-- **[api.js](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/services/api.js):** Checks `VITE_USE_MOCK`. When `"false"`, fetches `/overview`, `/resources`, `/alerts`, `/traffic`, `/recommendations`, and `POST /recommendations/{id}/action`, piping each response through [adapters.js](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/services/adapters.js):
+- **[api.js](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/services/api.js):** Checks `VITE_USE_MOCK`. When `"false"`, fetches `/overview`, `/resources`, `/alerts`, `/traffic`, `/recommendations`, `POST /alerts/{id}/status`, and `POST /recommendations/{id}/action`, piping responses through [adapters.js](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/services/adapters.js):
   - `adaptOverview`: Normalizes uppercase `riskLevel` & `activeAlerts` keys (`CRITICAL/HIGH/MEDIUM/LOW`), formats chart dates, and computes `expected` baseline cost from the series median if omitted.
   - `adaptResources`: Unwraps `resources`, sets `cpu = null` for storage (`ebs`/`s3`), maps `outdated → stale` and `not_applicable → n/a`, formats UTC timestamps, and derives human-readable `finding` messages for waste/backup gaps.
   - `adaptAlerts`: Uppercases severity, builds the 5-factor `breakdown` array (`ml 30%`, `iam 25%`, `resource 20%`, `cost 15%`, `traffic 10%`), infers event sources (`ct*` → `CloudTrail`, `cw*` → `CloudWatch`, `ce*` → `Cost Explorer`, `tr*` → `Traffic logs`), and maps `recommended_actions` → `steps`.
@@ -256,13 +256,13 @@ Backend APIs return wrapped snake_case payloads (`{ resources: [...] }`, `utiliz
   - `adaptRecommendations` & `adaptRecommendationAction`: Maps confidence strings (`high→0.9`, `medium→0.7`, `low→0.5`) and unwraps `{ id, state }`.
 
 ### Pages & Interactive Components
-- **[Layout.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/Layout.jsx) & [ui.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/ui.jsx):** Responsive sidebar + mobile nav, header showing **`Sample data`** vs **`Live data`**, **Refresh** button (remounting `<main key={refreshKey}>`), **Simulate Incident** trigger, and shared `useAsync` / `Async` error-retry boundary.
+- **[Layout.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/Layout.jsx) & [ui.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/ui.jsx):** Responsive sidebar + mobile nav, header showing **`Sample data`** vs **`Live data`** and active regions (`us-east-1 and eu-west-1` vs `us-east-1 and ap-southeast-1`), **Refresh** button (remounting `<main key={refreshKey}>`), **Simulate Incident** trigger (auto-refreshing active routes on live simulation via `onSimulated`), and shared `useAsync` / `Async` error-retry boundary.
 - **[Overview.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Overview.jsx):** 4 KPI cards (Cloud health, Active alerts, Monthly savings, Risk level), 30-day ComposedChart (Area cost vs dashed expected line vs CPU%), and severity progress bars.
 - **[Resources.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Resources.jsx):** Backup-gap alert banner, text search, type/backup dropdowns, **Backup Gaps Only** toggle, utilization bars, and **Export CSV** (`\uFEFF` UTF-8 BOM + leading-character neutralization against CSV formula injection `= + - @ \t \r`).
-- **[Security.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Security.jsx):** Split-pane incident feed + detail view showing Risk score, 5-factor breakdown bars, AI incident summary, ordered action steps, and chronological correlated event list.
+- **[Security.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Security.jsx):** Split-pane incident feed + detail view showing Risk score, lifecycle status controls (`Investigating`, `Resolve`, `Dismiss`, `Reopen`), 5-factor breakdown bars, AI incident summary, ordered action steps, and chronological correlated event list.
 - **[Traffic.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Traffic.jsx):** 24h request volume, bot share %, bot cost impact, ComposedChart (`requests`, `cpu %`, `cost/hr`), and endpoint verdict table.
 - **[Recommendations.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Recommendations.jsx):** Category badges (`Cost`, `Security`, `Backup`), live pending savings counter, and persistent **Approve** / **Dismiss** / **Undo** buttons.
-- **[SimulatePanel.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/SimulatePanel.jsx):** Keyboard-accessible dialog (`Escape` close, `Tab` focus trap, `AbortController` cleanup, `aria-live` updates). Runs local preview when `VITE_USE_MOCK=true` or calls `POST /api/v1/simulate` when `VITE_USE_MOCK=false`, parsing `incident`, `findings`, and `recommendations`.
+- **[SimulatePanel.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/SimulatePanel.jsx):** Keyboard-accessible dialog (`Escape` close, `Tab` focus trap, `AbortController` cleanup, `aria-live` updates). Runs local preview when `VITE_USE_MOCK=true` or calls `POST /api/v1/simulate` and triggers `onSimulated` when `VITE_USE_MOCK=false`.
 
 ---
 
@@ -274,9 +274,9 @@ Backend APIs return wrapped snake_case payloads (`{ resources: [...] }`, `utiliz
 - `backend/app/models/entities.py` — 4 ORM models + 6 `StrEnum` definitions
 - `backend/app/api/` — `overview.py`, `resources.py`, `alerts.py`, `traffic.py`, `recommendations.py`, `simulate.py`
 - `backend/app/services/` — `telemetry_provider.py`, `mock_generator.py`, `repository.py`, `auditor.py`, `correlator.py`, `ml_detector.py`, `risk_scorer.py`, `ai_explainer.py`, `ml_eval.py`
-- `backend/tests/` — 10 pytest suites (`55 / 55` passing)
+- `backend/tests/` — 10 pytest suites (`71 / 71` passing)
 - `frontend/src/` — `App.jsx`, `components/` (`Layout.jsx`, `SimulatePanel.jsx`, `ui.jsx`), `pages/` (5 views), `services/` (`api.js`, `adapters.js`, `adapters.test.mjs`), `mock/` (offline fixtures)
-- `docs/` — `awsense-a-to-z.md` (this guide), `system-analysis-and-design.md` (UML/DFD/ERD/methodology), `architecture-and-codebase.md`, `api-contract.json`, `day-*-tasks.md`
+- `docs/` — `awsense-a-to-z.md` (this guide), `system-analysis-and-design.md` (UML/DFD/ERD/methodology), `architecture-and-codebase.md`, `verification-report.md`, `api-contract.json`, `day-*-tasks.md`
 
 ### Running Everything Locally
 ```powershell
@@ -290,7 +290,7 @@ npm run dev
 - Backend Swagger Docs: `http://localhost:8000/docs`
 
 ### Verified Automated Checks
-- **Backend (`55 passed` across 10 files):**
+- **Backend (`71 passed` across 10 files):**
   `backend\.venv\Scripts\python.exe -m pytest backend\tests -v`
   *(Note: In restricted sandboxed terminals that block loopback sockets, `TestClient` suites `test_api_routes.py` and `test_auditor_and_simulate.py` must be run in a regular terminal.)*
 - **Frontend Adapters (`6 / 6 passed`):** `node --test frontend/src/services/adapters.test.mjs`
@@ -303,7 +303,6 @@ npm run dev
 
 To keep every technical explanation accurate against the current codebase on `main`:
 1. **AWS Live Collectors Verified via `Stubber`:** `Boto3TelemetryProvider` has full read-only collector implementations verified by 7 `botocore.stub.Stubber` unit tests, not yet against a live provisioned AWS sandbox account.
-2. **LLM Error Handling in `ai_explainer.py`:** When `OPENAI_API_KEY` or `GEMINI_API_KEY` is unset, `explain_incident()` uses its deterministic template reliably; however, network/HTTP/JSON exceptions when a live API key IS set are not yet caught inside `ai_explainer.py`.
-3. **Simulation Scoring & Repeated Runs (`simulate.py`):** Unlike `GET /api/v1/alerts` (which computes `score_risk()`), `POST /api/v1/simulate` currently sets fixed scenario risk scores (`96` / `92` / `78`), generates `sim_<uuid>` recommendations on every call rather than deduplicating, and does not trigger an automatic UI refresh in `Layout.jsx` until the user clicks **Refresh**.
-4. **Alert Status UI Controls:** Backend `POST /api/v1/alerts/{alert_id}/status` is implemented and tested, while [Security.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/pages/Security.jsx) currently displays status read-only (status mutation buttons in the UI exist on Recommendations only).
-5. **SQLite Portability Notes:** SQLite strips timezone info on `DateTime(timezone=True)` reads (`alerts.py` normalizes naive datetimes when sorting), and schema changes require recreating local `awsense.db` since Alembic migrations are not configured.
+2. **External LLM Keys & Managed DB:** Live OpenAI/Gemini requests depend on a valid `OPENAI_API_KEY`/`LLM_API_KEY` or `GEMINI_API_KEY` (mocked error fallbacks for network/HTTP/timeout/malformed responses are verified in `test_ml_ai.py`); PostgreSQL requires adding `psycopg2-binary` to `requirements.txt`.
+3. **Mock vs. Live Simulation Numbers:** Offline fixtures in [SimulatePanel.jsx](file:///g:/Visual%20Studio%20Code%20Folders/AWSense/frontend/src/components/SimulatePanel.jsx) show static preview scores (`94` / `78` / `41`), whereas live `POST /api/v1/simulate` calculates 5-factor `score_risk()` values from mock telemetry (`68` / `51` / `54`).
+4. **SQLite Portability Notes:** SQLite strips timezone info on `DateTime(timezone=True)` reads (`alerts.py` normalizes naive datetimes when sorting), and schema changes require recreating local `awsense.db` since Alembic migrations are not configured.

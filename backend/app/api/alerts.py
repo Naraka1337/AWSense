@@ -333,12 +333,12 @@ def _resolve_alert_ml_score(
     return None, resource_ids
 
 
-def _convert_db_alert(
+def _resolve_alert_risk(
     alert: Any,
     ml_scores: dict[str, float] | None = None,
     sg_map: dict[str, list[str]] | None = None,
-) -> AlertItem:
-    """Convert a SQLAlchemy SecurityAlert into the API response schema."""
+) -> tuple[float, AlertSeverity, float | None, SignalBreakdown, list[str]]:
+    """Compute ML-weighted risk score, severity, breakdown, and linked resource IDs."""
     breakdown = _normalize_breakdown(alert.signal_breakdown, alert)
     ml_score, resource_ids = _resolve_alert_ml_score(alert, ml_scores, sg_map)
 
@@ -354,6 +354,36 @@ def _convert_db_alert(
         )
         risk_score = float(scored["risk_score"])
         severity = AlertSeverity(str(scored["severity"]))
+
+    return risk_score, severity, ml_score, breakdown, resource_ids
+
+
+def score_alerts(
+    db: Session,
+    db_alerts: list[SecurityAlert],
+) -> list[tuple[float, AlertSeverity]]:
+    """Return scored (risk_score, severity) pairs consistent with GET /api/v1/alerts."""
+    if not db_alerts:
+        return []
+    ml_scores = _compute_ml_scores_by_resource(db)
+    sg_map = _build_security_group_resource_map(db)
+    return [
+        _resolve_alert_risk(db_alert, ml_scores, sg_map)[:2]
+        for db_alert in db_alerts
+    ]
+
+
+def _convert_db_alert(
+    alert: Any,
+    ml_scores: dict[str, float] | None = None,
+    sg_map: dict[str, list[str]] | None = None,
+) -> AlertItem:
+    """Convert a SQLAlchemy SecurityAlert into the API response schema."""
+    risk_score, severity, ml_score, breakdown, resource_ids = _resolve_alert_risk(
+        alert,
+        ml_scores,
+        sg_map,
+    )
 
     summary = alert.ai_summary or ""
     actions = list(alert.recommended_actions or [])

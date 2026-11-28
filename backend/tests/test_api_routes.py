@@ -157,6 +157,20 @@ def test_get_overview(client: TestClient) -> None:
         alerts["critical"] + alerts["high"] + alerts["medium"] + alerts["low"]
     )
 
+    alerts_resp = client.get("/api/v1/alerts")
+    assert alerts_resp.status_code == 200
+    active_list = [
+        item
+        for item in alerts_resp.json()["alerts"]
+        if item["status"] in {"open", "investigating"}
+    ]
+    assert alerts["total"] == len(active_list)
+    for sev in ("critical", "high", "medium", "low"):
+        assert alerts[sev] == sum(1 for item in active_list if item["severity"] == sev)
+    if active_list:
+        max_score = max(float(item["risk_score"]) for item in active_list)
+        assert data["health_score"] == round(max(0.0, min(100.0, 100.0 - max_score)), 1)
+
     assert len(data["cost_usage_trend"]) >= 5
     first_point = data["cost_usage_trend"][0]
     assert {

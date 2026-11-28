@@ -230,7 +230,7 @@ sequenceDiagram
     UI-->>User: render feed
 ```
 
-Seeding stores the correlator score for correlated incidents (§7.2). The alert API computes the five-factor response score when the alert has a usable ML score (§7.3).
+Seeding stores the correlator score for correlated incidents (§7.2). Both `GET /alerts` and `GET /overview` compute the five-factor response score (`score_alerts()`) when an alert has a usable ML score (§7.3).
 
 ---
 
@@ -379,15 +379,15 @@ Out-of-range or non-finite inputs raise `ValueError`. The result is rounded to 2
 
 ## 8. Incident Simulation (`backend/app/api/simulate.py`)
 
-`POST /api/v1/simulate` with body `{"scenario": "iam_breach" | "bot_traffic" | "resource_waste"}`. The API uses the mock provider to generate scenario findings and recommendations. It ensures the scenario resource exists, uses the explainer for the summary and actions, saves the simulated alert with a scenario-specific ID and commits any generated recommendations as pending.
+`POST /api/v1/simulate` with body `{"scenario": "iam_breach" | "bot_traffic" | "resource_waste"}`. The API uses the mock provider to generate scenario findings and recommendations, computes 5-factor risk via `score_risk()` (`ml_score`, `iam_risk`, `resource_impact`, `cost_impact`, `traffic_anomaly`), ensures the simulated `CloudResource` (`i-sim-*`) exists, enriches the summary and steps via `explain_incident()`, saves `sim_alert_{scenario}` (including full `signal_breakdown` and `correlated_event_ids`), and replaces any existing `sim_*` recommendations for that scenario resource idempotently.
 
-| Scenario | Backend `risk_score` / severity (findings present) | Fallback (no findings) |
+| Scenario | Backend `risk_score` / severity (mock signals present) | Fallback (no signals/findings) |
 | :--- | :--- | :--- |
-| `iam_breach` | 96, critical | 10, low |
-| `bot_traffic` | 92, critical | 15, low |
-| `resource_waste` | 78, high | 10, low |
+| `iam_breach` | 68, high | 0, low |
+| `bot_traffic` | 51, medium | 0, low |
+| `resource_waste` | 54, medium | 0, low |
 
-Scenario-specific rules produce the simulation response scores above. The frontend offline fixtures have their own scores in `SimulatePanel.jsx`. The Alerts API may recalculate a stored simulation alert's response score if an ML score can be resolved (§7.3).
+The frontend offline fixtures have separate sample previews in `SimulatePanel.jsx` (`94` critical, `78` high, `41` medium). Because `sim_alert_{scenario}` persists `signal_breakdown["ml_score"]`, subsequent `GET /alerts` and `GET /overview` requests evaluate the stored alert with the same `score_risk()` logic (§7.3).
 
 ---
 
@@ -414,9 +414,9 @@ Note on backup status: the API and database use `outdated`; the frontend adapter
 
 ## 10. Known Gaps (found during verification)
 
-1. AWS collection requires configured read-only credentials and service access. Startup database seeding still defaults to the mock provider unless a provider is passed explicitly to `seed_database()`.
+1. AWS collection requires configured read-only credentials and service access. Startup seeding now invokes `seed_database(session, provider=get_telemetry_provider())` in `main.py` (`mock` by default unless `DATA_SOURCE=aws`).
 2. The benchmark in §11 measures synthetic ML inference. The REST response-time targets in §2 still need endpoint-level measurements.
-3. `CORS allow_origins=["*"]` in `main.py` is flagged in code as development-only.
+3. `CORS_ORIGINS` in `main.py` defaults to `["*"]` for local development; configure a specific origin allowlist before production deployment.
 4. Python 3.11 or newer is required because the backend uses `enum.StrEnum`.
 
 ---

@@ -41,7 +41,9 @@ export default function Layout() {
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/60 px-5 py-3 md:px-8">
           <div>
             <p className="text-base font-semibold">{title}</p>
-            <p className="text-xs text-muted">Account 4821-0093-1175 · us-east-1 and eu-west-1</p>
+            <p className="text-xs text-muted">
+              Account 4821-0093-1175 · {usingMock ? 'us-east-1 and eu-west-1' : 'us-east-1 and ap-southeast-1'}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-raised px-3 py-1 text-xs text-muted">
