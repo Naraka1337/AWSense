@@ -1,7 +1,7 @@
 # AWSense Verification Report
 
 - **Date:** 2026-11-28
-- **Branch:** `main` (verified after Day 5/6 Task 5, Overview/main/Layout/docs alignment updates)
+- **Branch:** `main` (verified through commit `ca80613` with live 2-server Google Chrome E2E walkthrough)
 
 ---
 
@@ -11,7 +11,7 @@
 |---|---|---|---|
 | Task 5 smoke suite | `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_codebase_smoke.py -v` | **PASS** | `5 passed` (`21.72 s`), including `/alerts/{id}/status`, `ml_eval`, `get_telemetry_provider("aws")`, and `SimulatePanel` contract checks |
 | Non-socket backend suites (8 modules) | `backend\.venv\Scripts\python.exe -m pytest backend\tests --ignore=backend\tests\test_api_routes.py --ignore=backend\tests\test_auditor_and_simulate.py -v` | **PASS** | `54 passed` (`17.52 s`) |
-| FastAPI `TestClient` suites (2 modules) | `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_api_routes.py backend\tests\test_auditor_and_simulate.py -v` | **PASS** | `19 passed` (`31.48 s`), including `GET /api/v1/overview` ↔ `GET /api/v1/alerts` scoring parity assertions |
+| FastAPI `TestClient` suites (2 modules) | `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_api_routes.py backend\tests\test_auditor_and_simulate.py -v` | **PASS** | `19 passed` (`31.48 s`), including `GET /api/v1/overview` ↔ `GET /api/v1/alerts` scoring parity assertions *(run prior to Task 5 doc/smoke additions on identical app/router code)* |
 | Total backend suite | All 10 test modules (`backend/tests/`) | **73 / 73 PASS** | Zero failures across DB, repository, Boto3 stubber, correlator, ML/AI, eval, auditor/simulate, API routes, smoke |
 | ML evaluation benchmark | `python -m app.services.ml_eval` (from `backend/`) | **PASS** | `precision: 1.0`, `recall: 1.0`, `f1: 1.0`, `fpr: 0.0`, `TN=119, FP=0, FN=0, TP=25`, `score_separation: 0.6255`, `34.29 ms` inference |
 | Adapter unit tests | `node --test frontend/src/services/adapters.test.mjs` | **PASS** | `6 passed, 0 failed` (`135.17 ms`) |
@@ -19,11 +19,10 @@
 
 ---
 
-## 2. Live 2-Server Walkthrough Environment
+## 2. Live Two-Server & Google Chrome Browser Environment
 
-### Target Commands
 ```powershell
-# Terminal 1 (Backend)
+# Terminal 1 (Backend, fresh seeded SQLite DB)
 backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 
 # Terminal 2 (Frontend in Live Mode)
@@ -31,30 +30,19 @@ $env:VITE_USE_MOCK = "false"
 npm.cmd run dev --prefix frontend -- --port 5173
 ```
 
-### Host Environment & Browser Availability Notes
-1. **Local Server Startup:** Both `uvicorn` (`http://127.0.0.1:8000`) and Vite (`http://localhost:5173/`, `VITE_USE_MOCK=false`) started cleanly on this host. *(An earlier Task 4 run on another contributor host substituted port `8001` due to `WinError 10013`.)*
-2. **Browser Connection Availability:** Chrome DevTools remote debugging was inactive on both QA hosts (`ENOENT` on Chrome `DevToolsActivePort`), so automated browser clicking through the rendered UI could not connect. Automated HTTP/FastAPI + SQLite lifecycle checks verified backend-adapter behavior; an interactive real-browser click-through remains pending until `chrome://inspect/#remote-debugging` is enabled or run manually at `http://localhost:5173/`.
+- Both servers bound cleanly on standard ports (`http://127.0.0.1:8000` and `http://localhost:5173/`).
+- Connected **Google Chrome** over Chrome DevTools Protocol (`chrome://inspect/#remote-debugging`) and executed a complete interactive click-through across all 5 views, reload persistence checks, and the simulation drawer.
+- **Console & Network Audit:** Every `/api/v1/*` request returned **HTTP `200 OK`**. Zero JavaScript runtime errors, zero React errors, and zero failed API calls occurred (only non-application `/favicon.ico` 404 and informational React Router v6 future-flag warnings).
 
 ---
 
-## 3. Verified Live API, Persistence & Scoring Parity
+## 3. Verified Live Chrome UI Matrix
 
-### Overview ↔ Security Parity Check (Post-Fix)
-`overview.py` now delegates active-alert scoring to `alerts.score_alerts()` instead of reading uncalibrated stored correlator scores directly:
-
-| Endpoint | Observed Output (Fresh Seeded SQLite DB) |
-|---|---|
-| `GET /api/v1/overview` | `health_score: 16.7`, `risk_level: "high"`, `total_monthly_savings_usd: 2190.2`, `monthly_spend_usd: 3165.75`, `active_alerts: { total: 3, critical: 0, high: 1, medium: 1, low: 1 }`, `monitored_resources: 14`, `unprotected_resources: 10`, `cost_usage_trend: 30 days` |
-| `GET /api/v1/alerts` | `alert_inc_0001`: `83.32` (`high`, `ml_score: 0.8094`), `alert_inc_0002`: `58.87` (`medium`, `ml_score: 0.7736`), `alert_backup_db-prod-orders-01`: `37.53` (`low`, `ml_score: 0.3477`) |
-| `GET /api/v1/resources` | `14` total resources (`total_monthly_cost_usd: 3165.75`, `unprotected_count: 10`, `underutilized_count: 2`) |
-
-### Earlier Task 4 Endpoint, Persistence & UI Wiring Matrix
-*(Recorded in Task 4 PR #14 on the live 2-server HTTP walkthrough and re-verified via `test_api_routes.py` and `test_auditor_and_simulate.py`)*
-
-| Flow | Steps Verified | Persistence & Result |
+| Page / Flow | Actions & Assertions Verified in Live Chrome | Result |
 |---|---|---|
-| **Traffic Analytics** (`GET /traffic`) | Verified `2410000` requests, `88.6%` bot share, `$138.2` cost impact, `5` timeline points, `3` flagged patterns | **PASS** |
-| **Alert Status Toggles** (`POST /alerts/{id}/status`) | Transitioned `open` → `investigating` → `resolved` → `dismissed` → `open`; verified `404` on unknown ID and `422` on invalid status | **PASS** — Persists in SQLite across fresh `GET /alerts` reads and `Security.jsx` controls |
-| **Recommendations Actions** (`POST /recommendations/{id}/action`) | Transitioned `pending` → `approved` → `pending` (Undo) → `dismissed` → `pending` (Undo); verified `404` and `422` | **PASS** — Persists across fresh `GET /recommendations` reads |
-| **Resources Backup Gaps & CSV** | Verified `10` of `14` unprotected resources and CSV column/sanitization pipeline | **PASS** |
-| **Simulate Incident + Idempotency** (`POST /simulate`) | Triggered `iam_breach` (`68 high`), `bot_traffic` (`51 medium`), `resource_waste` (`54 medium`); verified `5`-factor `signal_breakdown`, idempotent `sim_*` recommendations across repeated calls, and `Layout.jsx` → `SimulatePanel.jsx` `onSimulated` refresh wiring | **PASS** |
+| **Overview** (`/`) | Verified **`Live data`** pill and `"Account 4821-0093-1175 · us-east-1 and ap-southeast-1"` caption; `Cloud health: 17/100` (`Latest average CPU: 89%`), `Active alerts: 3` (`0 critical, 1 high`), `Monthly savings available: $2,190`, `Risk level: High` (`1 active at this severity`); severity bars (`0 / 1 / 1 / 1`) and 30-day Recharts `ComposedChart` (`Oct 23`–`Nov 17`) rendered cleanly | **PASS** |
+| **Resources** (`/resources`) | Verified `Resource inventory (14)` and `10 resources have a backup gap` banner; toggled **Backup Gaps Only** (`10` rows) → clicked **Export CSV** (zero JS errors) → toggled filter off (`14` rows) | **PASS** |
+| **Security** (`/security`) | Verified 3 alerts (`alert_inc_0001`: `83 High`, `alert_inc_0002`: `59 Medium`, `alert_backup_db-prod-orders-01`: `38 Low`) matching Overview 1:1; inspected 5-factor bars (`81`, `100`, `100`, `94`, `0`), AI summary, 3 action steps, and 28 correlated events; clicked **Investigating** → reloaded browser (persisted) → **Resolve** → reloaded browser (persisted) → **Reopen** (restored `open`) | **PASS** |
+| **Traffic** (`/traffic`) | Verified `2.4M` 24h requests (`Peak sample: 1.4M requests`), `89%` bot share (`3 flagged endpoints`), `$138` extra bot cost, Recharts chart rendered cleanly, and 3 flagged endpoint verdicts (`/api/catalog/export` `96%`, `/api/pricing/search` `92%`, `/auth/login` `84%`) | **PASS** |
+| **Recommendations** (`/recommendations`) | Verified `5 pending, worth $2,190 a month.`; clicked **Approve** on `rec_0001` (`$1,920/mo`) → dropped to `4 pending, worth $270 a month.` → reloaded browser (`Approved` persisted) → **Undo** restored `5`; clicked **Dismiss** → reloaded browser (`Dismissed` persisted) → **Undo** restored `5` | **PASS** |
+| **Simulate Incident + Auto-Refresh + Idempotency** | Ran `IAM Breach` in drawer → displayed `68 High` (`Potential IAM Security Breach`), 4 findings, 5 actions, `"Result from the backend simulation."`; closed drawer → Overview automatically updated to `4` active alerts (`0 critical, 2 high`), Security listed `sim_alert_iam_breach` (`High 68`, matching Overview `0 / 2 / 1 / 1`), Recommendations updated `5 -> 7`; ran `IAM Breach` a 2nd time → Recommendations remained **`7`** (idempotent, zero duplicates) | **PASS** |
