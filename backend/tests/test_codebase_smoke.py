@@ -24,11 +24,17 @@ from app.api.recommendations import (  # noqa: E402
     get_recommendations,
 )
 from app.api.resources import get_resources  # noqa: E402
+from app.api.simulate import SimulationRequest, simulate_scenario  # noqa: E402
 from app.api.traffic import get_traffic  # noqa: E402
 from app.core.database import build_engine, create_tables  # noqa: E402
 from app.main import app, health_check, read_root  # noqa: E402
 from app.models.entities import BackupStatus, RecommendationState  # noqa: E402
+from app.services.ml_eval import evaluate_ml  # noqa: E402
 from app.services.mock_generator import MockTelemetryProvider  # noqa: E402
+from app.services.telemetry_provider import (  # noqa: E402
+    Boto3TelemetryProvider,
+    get_telemetry_provider,
+)
 from app.services.repository import (  # noqa: E402
     list_alerts,
     list_recommendations,
@@ -47,6 +53,7 @@ def test_fastapi_routes_and_handlers_smoke(tmp_path: Path) -> None:
         "/api/v1/overview",
         "/api/v1/resources",
         "/api/v1/alerts",
+        "/api/v1/alerts/{alert_id}/status",
         "/api/v1/traffic",
         "/api/v1/recommendations",
         "/api/v1/recommendations/{recommendation_id}/action",
@@ -174,3 +181,73 @@ def test_frontend_structure_and_mock_fixtures_smoke() -> None:
     assert summary["alerts"] >= 2
     assert summary["trafficTotal"] > 0
     assert summary["recommendations"] >= 4
+
+
+def test_ml_eval_and_aws_provider_smoke() -> None:
+    """Verify ML evaluation benchmark and AWS Boto3TelemetryProvider factory resolution."""
+    report = evaluate_ml()
+    assert report["precision"] >= 0.95
+    assert report["recall"] >= 0.95
+    assert report["f1"] >= 0.95
+    assert report["score_separation"] > 0
+    assert report["confusion_matrix"]["tp"] > 0
+    assert report["inference_ms_total"] > 0
+    assert len(report["incidents"]) >= 1
+
+    aws_provider = get_telemetry_provider("aws")
+    assert isinstance(aws_provider, Boto3TelemetryProvider)
+    assert aws_provider.source_name == "aws"
+    for method_name in (
+        "get_resources",
+        "get_metrics",
+        "get_cloudtrail_events",
+        "get_traffic_logs",
+        "get_cost_usage",
+    ):
+        assert callable(getattr(aws_provider, method_name))
+
+    with pytest.raises(ValueError, match="Unsupported DATA_SOURCE"):
+        get_telemetry_provider("invalid_source")
+
+
+def test_simulate_panel_contract_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify POST /api/v1/simulate handler output matches SimulatePanel.jsx expectations."""
+    for key in ("LLM_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    db_file = tmp_path / "simulate_smoke.db"
+    engine = build_engine(f"sqlite:///{db_file.as_posix()}")
+    create_tables(engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    try:
+        with session_factory() as session:
+            for scenario in ("iam_breach", "bot_traffic", "resource_waste"):
+                result = simulate_scenario(
+                    SimulationRequest(scenario=scenario),
+                    db=session,
+                )
+                payload = result.model_dump(mode="json")
+
+                assert set(payload.keys()) == {"incident", "findings", "recommendations"}
+                incident = payload["incident"]
+                assert isinstance(incident["title"], str) and incident["title"]
+                assert isinstance(incident["risk_score"], int)
+                assert 0 <= incident["risk_score"] <= 100
+                assert incident["severity"] in {"critical", "high", "medium", "low"}
+                assert isinstance(incident["summary"], str) and incident["summary"]
+                assert isinstance(incident["recommended_actions"], list)
+                assert len(incident["recommended_actions"]) >= 1
+                assert isinstance(payload["findings"], list) and len(payload["findings"]) >= 1
+                assert isinstance(payload["recommendations"], list)
+                assert len(payload["recommendations"]) >= 1
+                assert all(
+                    isinstance(rec, dict) and (rec.get("action") or rec.get("title"))
+                    for rec in payload["recommendations"]
+                )
+    finally:
+        engine.dispose()
+

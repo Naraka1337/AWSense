@@ -128,6 +128,7 @@ AWSense/
 │   ├── day-3-tasks.md
 │   ├── day-4-tasks.md
 │   ├── day-5-6-tasks.md
+│   ├── demo-and-presentation.md
 │   ├── system-analysis-and-design.md
 │   ├── task-distribution.md
 │   └── verification-report.md
@@ -196,7 +197,7 @@ The application currently supports mock and simulated workflows. Connecting a li
   `fastapi>=0.115.0,<1.0`, `uvicorn>=0.30.0,<1.0`, `pydantic>=2.9.0,<3.0`, `boto3>=1.35.0,<2.0`, `scikit-learn>=1.5.0,<2.0`, `pandas>=2.2.2,<3.0`, `sqlalchemy>=2.0.35,<3.0`, `python-dotenv>=1.0.0,<2.0`, `pytest>=8.0.0,<9.0`, `httpx>=0.27.0,<1.0`.
 - `pyrightconfig.json`: Sets `"include": ["backend"]`, `"extraPaths": ["backend"]`, `"venvPath": "backend"`, `"venv": ".venv"` so Pylance/Pyright resolves both third-party packages and `app.*` imports across OSes.
 - `backend/pytest.ini`: Sets `pythonpath = .` and `testpaths = tests`.
-- `backend/.env.example`: Defaults `DATABASE_URL=sqlite:///./awsense.db`, `SQL_ECHO=false`, with commented PostgreSQL example.
+- `backend/.env.example`: Defaults `DATABASE_URL=sqlite:///./awsense.db`, `SQL_ECHO=false`, `DATA_SOURCE=mock`, `AWS_REGION=us-east-1`, `CORS_ORIGINS=*`, with commented PostgreSQL, `AWS_PROFILE`, and OpenAI/Gemini configuration options.
 
 ### 5.5 Existing Tests
 

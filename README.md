@@ -78,7 +78,7 @@ AWSense/
 │   │   │   ├── risk_scorer.py    # 5-factor composite mathematical scoring formula
 │   │   │   └── telemetry_provider.py # Provider abstraction (Mock & Boto3 collectors)
 │   │   └── main.py               # FastAPI application startup, CORS, and routers
-│   ├── tests/                    # Pytest unit, API & smoke suites (71 tests, 10 modules)
+│   ├── tests/                    # Pytest unit, API & smoke suites (73 tests, 10 modules)
 │   ├── requirements.txt          # Python dependencies
 │   ├── pytest.ini                # Pytest configuration
 │   └── .env.example              # Backend environment template
@@ -108,6 +108,7 @@ AWSense/
     ├── system-analysis-and-design.md # Full engineering analysis & Mermaid diagrams
     ├── architecture-and-codebase.md  # Deep-dive codebase technical reference
     ├── awsense-a-to-z.md             # A-to-Z project & codebase walkthrough
+    ├── demo-and-presentation.md      # 5–7 min defense outline & live demo script
     ├── verification-report.md        # Live 2-server QA & browser verification report
     └── api-contract.json             # REST API payload contracts
 ```
@@ -157,22 +158,35 @@ Create a local `.env` file from the template:
 cp .env.example .env
 ```
 
-Contents of `backend/.env`:
+Template variables in `backend/.env.example`:
 ```env
 # Database connection string (defaults to backend/awsense.db when unset)
 DATABASE_URL=sqlite:///./awsense.db
 
 # Enable SQL statement logging (true | false)
 SQL_ECHO=false
-```
 
-Optional runtime environment variables supported by the backend:
+# Telemetry ingestion source: "mock" (30-day synthetic dataset) or "aws" (Boto3 read-only collectors)
+DATA_SOURCE=mock
+AWS_REGION=us-east-1
+# AWS_PROFILE=your-read-only-profile
+
+# Optional LLM incident explanation keys (deterministic template fallback when unset)
+# LLM_API_KEY=
+# OPENAI_API_KEY=
+# GEMINI_API_KEY=
+# LLM_MODEL=gpt-4o-mini
+# GEMINI_MODEL=gemini-3.5-flash-lite
+
+# Comma-separated allowed CORS origins (defaults to "*")
+CORS_ORIGINS=*
+```
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `DATA_SOURCE` | `mock` | `mock` or `aws` (`Boto3TelemetryProvider` implements read-only EC2/EBS/RDS/S3/CloudWatch/CloudTrail/Cost Explorer collectors) |
 | `OPENAI_API_KEY` / `LLM_API_KEY` | unset | Enables OpenAI explanations; `LLM_MODEL` defaults to `gpt-4o-mini` |
-| `GEMINI_API_KEY` | unset | Enables Gemini explanations (used only if no OpenAI key); `GEMINI_MODEL` overrides the model |
+| `GEMINI_API_KEY` | unset | Enables Gemini explanations (used only if no OpenAI key); `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite` |
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | Used by `Boto3TelemetryProvider` |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins for FastAPI (defaults to `*` for local development) |
 
@@ -187,7 +201,7 @@ python -c "from app.core import database; from app.services.repository import se
 ```
 
 #### Step 5: Run the Backend Test Suite & ML Benchmark
-Verify that all 71 unit and integration tests pass:
+Verify that all 73 unit and integration tests pass:
 ```bash
 pytest -v
 # or, from the repository root:
@@ -300,7 +314,7 @@ Generates production assets in `frontend/dist/`.
 
 | Test Command | Scope | Target | Result |
 | :--- | :--- | :--- | :---: |
-| `pytest backend/tests -v` | Backend Unit & Integration Tests (10 modules) | Database, ORM, ML, ML Eval, Boto3 Stubber, Correlator, Auditor, API, Simulate, Repository, Smoke | **71 / 71 PASSED** |
+| `pytest backend/tests -v` | Backend Unit & Integration Tests (10 modules) | Database, ORM, ML, ML Eval, Boto3 Stubber, Correlator, Auditor, API, Simulate, Repository, Smoke | **73 / 73 PASSED** |
 | `node --test frontend/src/services/adapters.test.mjs` | Frontend Adapter Tests | Overview, Resources, Alerts, Traffic, Recommendations schema mappers | **6 / 6 PASSED** |
 | `npm run build --prefix frontend` | Production Bundle Compilation | Vite React compilation, PostCSS, Tailwind CSS | **PASSED (0 errors)** |
 

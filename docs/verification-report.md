@@ -1,7 +1,7 @@
 # AWSense Verification Report
 
 - **Date:** 2026-11-28
-- **Branch:** `main` (verified after commit `bb96d70` with Overview/main/Layout/docs alignment updates)
+- **Branch:** `main` (verified after Day 5/6 Task 5, Overview/main/Layout/docs alignment updates)
 
 ---
 
@@ -9,12 +9,13 @@
 
 | Check | Command | Result | Details |
 |---|---|---|---|
-| Non-socket backend suites (8 modules) | `backend\.venv\Scripts\python.exe -m pytest backend\tests --ignore=backend\tests\test_api_routes.py --ignore=backend\tests\test_auditor_and_simulate.py -v` | **PASS** | `52 passed` (`16.14 s`) |
+| Task 5 smoke suite | `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_codebase_smoke.py -v` | **PASS** | `5 passed` (`21.72 s`), including `/alerts/{id}/status`, `ml_eval`, `get_telemetry_provider("aws")`, and `SimulatePanel` contract checks |
+| Non-socket backend suites (8 modules) | `backend\.venv\Scripts\python.exe -m pytest backend\tests --ignore=backend\tests\test_api_routes.py --ignore=backend\tests\test_auditor_and_simulate.py -v` | **PASS** | `54 passed` (`17.52 s`) |
 | FastAPI `TestClient` suites (2 modules) | `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_api_routes.py backend\tests\test_auditor_and_simulate.py -v` | **PASS** | `19 passed` (`31.48 s`), including `GET /api/v1/overview` ↔ `GET /api/v1/alerts` scoring parity assertions |
-| Total backend suite | All 10 test modules (`backend/tests/`) | **71 / 71 PASS** | Zero failures across DB, repository, Boto3 stubber, correlator, ML/AI, eval, auditor/simulate, API routes, smoke |
+| Total backend suite | All 10 test modules (`backend/tests/`) | **73 / 73 PASS** | Zero failures across DB, repository, Boto3 stubber, correlator, ML/AI, eval, auditor/simulate, API routes, smoke |
 | ML evaluation benchmark | `python -m app.services.ml_eval` (from `backend/`) | **PASS** | `precision: 1.0`, `recall: 1.0`, `f1: 1.0`, `fpr: 0.0`, `TN=119, FP=0, FN=0, TP=25`, `score_separation: 0.6255`, `34.29 ms` inference |
-| Adapter unit tests | `node --test frontend/src/services/adapters.test.mjs` | **PASS** | `6 passed, 0 failed` (`117.16 ms`) |
-| Production frontend build | `npm.cmd run build --prefix frontend` | **PASS** | `2192 modules transformed`, built in `9.86 s` (`dist/index.html`, CSS `15.40 kB`, JS `630.81 kB`) |
+| Adapter unit tests | `node --test frontend/src/services/adapters.test.mjs` | **PASS** | `6 passed, 0 failed` (`135.17 ms`) |
+| Production frontend build | `npm.cmd run build --prefix frontend` | **PASS** | `2192 modules transformed`, built in `14.62 s` (`dist/index.html`, CSS `15.40 kB`, JS `630.81 kB`) |
 
 ---
 

@@ -274,9 +274,9 @@ Backend APIs return wrapped snake_case payloads (`{ resources: [...] }`, `utiliz
 - `backend/app/models/entities.py` — 4 ORM models + 6 `StrEnum` definitions
 - `backend/app/api/` — `overview.py`, `resources.py`, `alerts.py`, `traffic.py`, `recommendations.py`, `simulate.py`
 - `backend/app/services/` — `telemetry_provider.py`, `mock_generator.py`, `repository.py`, `auditor.py`, `correlator.py`, `ml_detector.py`, `risk_scorer.py`, `ai_explainer.py`, `ml_eval.py`
-- `backend/tests/` — 10 pytest suites (`71 / 71` passing)
+- `backend/tests/` — 10 pytest suites (`73 / 73` passing)
 - `frontend/src/` — `App.jsx`, `components/` (`Layout.jsx`, `SimulatePanel.jsx`, `ui.jsx`), `pages/` (5 views), `services/` (`api.js`, `adapters.js`, `adapters.test.mjs`), `mock/` (offline fixtures)
-- `docs/` — `awsense-a-to-z.md` (this guide), `system-analysis-and-design.md` (UML/DFD/ERD/methodology), `architecture-and-codebase.md`, `verification-report.md`, `api-contract.json`, `day-*-tasks.md`
+- `docs/` — `awsense-a-to-z.md` (this guide), `system-analysis-and-design.md` (UML/DFD/ERD/methodology), `architecture-and-codebase.md`, `demo-and-presentation.md`, `verification-report.md`, `api-contract.json`, `day-*-tasks.md`
 
 ### Running Everything Locally
 ```powershell
@@ -290,7 +290,7 @@ npm run dev
 - Backend Swagger Docs: `http://localhost:8000/docs`
 
 ### Verified Automated Checks
-- **Backend (`71 passed` across 10 files):**
+- **Backend (`73 passed` across 10 files):**
   `backend\.venv\Scripts\python.exe -m pytest backend\tests -v`
   *(Note: In restricted sandboxed terminals that block loopback sockets, `TestClient` suites `test_api_routes.py` and `test_auditor_and_simulate.py` must be run in a regular terminal.)*
 - **Frontend Adapters (`6 / 6 passed`):** `node --test frontend/src/services/adapters.test.mjs`
