@@ -43,3 +43,26 @@ export const actOnRecommendation = (id, action) =>
         method: 'POST',
         body: JSON.stringify({ action }),
       }).then(adaptRecommendationAction)
+
+// status: 'open' | 'investigating' | 'resolved' | 'dismissed'
+export const updateAlertStatus = (id, status) =>
+  USE_MOCK
+    ? local({ id, status })
+    : http(`/alerts/${encodeURIComponent(id)}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ status }),
+      }).then((res) => {
+        const item = res?.alert ?? res ?? {}
+        const nextStatus = String(item.status ?? status).toLowerCase()
+        const out = {
+          id: String(item.alert_id ?? item.id ?? id),
+          status: nextStatus,
+        }
+        if (res?.previous_status != null) {
+          out.previousStatus = String(res.previous_status).toLowerCase()
+        }
+        if (res?.message != null) {
+          out.message = String(res.message)
+        }
+        return out
+      })

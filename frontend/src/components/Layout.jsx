@@ -77,7 +77,11 @@ export default function Layout() {
         </main>
       </div>
 
-      <SimulatePanel open={simulateOpen} onClose={() => setSimulateOpen(false)} />
+      <SimulatePanel
+        open={simulateOpen}
+        onClose={() => setSimulateOpen(false)}
+        onSimulated={() => setRefreshKey((k) => k + 1)}
+      />
     </div>
   )
 }

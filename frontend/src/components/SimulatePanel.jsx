@@ -166,7 +166,7 @@ function parseSimulationResponse(body) {
   }
 }
 
-export default function SimulatePanel({ open, onClose }) {
+export default function SimulatePanel({ open, onClose, onSimulated }) {
   const [scenario, setScenario] = useState('iam_breach')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -293,6 +293,7 @@ export default function SimulatePanel({ open, onClose }) {
       const body = await res.json()
       const parsed = parseSimulationResponse(body)
       setResult(parsed)
+      onSimulated?.()
     } catch (err) {
       if (err.name === 'AbortError') return
       setError(err)
